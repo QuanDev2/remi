@@ -168,6 +168,10 @@ The likely first step into phase 2 isn't replacing the coding agents — frontie
 
 ---
 
+## Docs
+
+- [Original handoff note](docs/handoff-2026-08-23.md) — the source document this project was scoped from, with a table of decisions since superseded.
+
 ## Status
 
 Just started. Nothing built yet.
