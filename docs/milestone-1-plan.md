@@ -21,8 +21,20 @@ Read this first. Setup instructions are in [SETUP.md](SETUP.md).
 
 ### Next action
 
-Write `remi-plan.ts`: goal setter → planner → plan reviewer → ledger rows → PM brief → exit.
-Run it against one small real change to this repository. Its criterion is under Step 5 below.
+Remaining tasks, in order. Items 1 and 3 are independent of each other and of 2.
+
+| # | Task | Blocking |
+|---|---|---|
+| 1 | Node-capable sandbox image for `executor` and `test-executor` | **blocks step 6** |
+| 2 | Write `remi-plan.ts` — step 5, the phase-1 script and the gate | — |
+| 3 | Root `package.json` and a test runner, so the test lane has a target | **blocks step 6** |
+| 4 | Write `remi-build.ts` — step 6 | needs 1 and 3 |
+| 5 | One end-to-end run on a real change, Quan as the gate | the acceptance criterion |
+
+**Handover sequencing, decided.** Step 5 gets written conventionally rather than by Remi. Having
+Remi invent the pipeline that is meant to constrain it inverts the point, and there would be no
+gate while it did so. Hand over at step 6: by then the loop exists and the instruction is "run
+your own pipeline" rather than "invent one".
 
 Two open questions to settle while doing it:
 
@@ -34,7 +46,16 @@ Two open questions to settle while doing it:
    root stated. `high` may be the better trade.
 2. **Worker tool profiles.** Roles carry the full `coding` profile, including tools no lane
    contract mentions — `automations` alone is roughly 15% of the schema payload. Trim to observed
-   need after watching a real run, not before. See the note under D-notes on codeMode.
+   need after watching a real run, not before.
+
+### Verifying an agent's claims about itself
+
+Three times in one session an agent confidently misdescribed its own environment: it reported a
+tool as available while its own catalog proved otherwise, reported reviewing this project while
+reading another, and reported running on the host while `sandbox explain` showed it containerised.
+
+Check environmental claims from outside the sandbox. `sandbox explain`, `plugins inspect`, a direct
+`psql` query, and `ls` from a host shell are all cheap. An agent's self-report is a hypothesis.
 
 ### What is not in this repository
 
