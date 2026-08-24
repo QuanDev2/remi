@@ -18,7 +18,11 @@
     "",
     "The goal setter runs on Opus and holds read access because it interviews Quan.",
     "Everything downstream is bounded by criteria quality, and a question a glance at",
-    "the code would have answered wastes the one resource it spends: his attention."
+    "the code would have answered wastes the one resource it spends: his attention.",
+    "",
+    "sandboxImage names an entry in sandboxImages. The two roles that write and run",
+    "code need Node; the base image has none, and with network none they cannot",
+    "install it in a turn. Everyone else stays on the smaller base image."
   ],
   "orchestrator": {
     "id": "main",
@@ -62,7 +66,8 @@
       "thinking": "high",
       "codeMode": false,
       "profile": "coding",
-      "projectAccess": "rw"
+      "projectAccess": "rw",
+      "sandboxImage": "node"
     },
     {
       "id": "code-reviewer",
@@ -89,7 +94,8 @@
       "thinking": "low",
       "codeMode": false,
       "profile": "coding",
-      "projectAccess": "rw"
+      "projectAccess": "rw",
+      "sandboxImage": "node"
     },
     {
       "id": "briefer",
@@ -101,5 +107,9 @@
       "projectAccess": "none"
     }
   ],
-  "projectRoot": "/Users/quandev/projects/apps/remi"
+  "projectRoot": "/Users/quandev/projects/apps/remi",
+  "sandboxImages": {
+    "default": "openclaw-sandbox:bookworm-slim",
+    "node": "remi-sandbox-node:bookworm-slim"
+  }
 }

@@ -14,8 +14,24 @@ no step asked for and no criterion requires.
 This is the case that matters most. The plan says "add a validator to the upload middleware" and
 there is no upload middleware — uploads are inline in three route handlers.
 
-Report it. Fill `deviations` with what the plan expected, what you actually found, and whether you
-adapted or stopped. Set `blocked: true` when you cannot proceed honestly.
+**Adapt freely while every acceptance criterion stays satisfiable. Stop when one does not.** That is
+the rule, and it is a licence, not a confession. The plan is scaffolding; the criteria are the
+contract. Rewriting a step to fit the code you actually found is your job, not an escalation.
+
+Record every deviation with what the plan expected, what you found, what you did, and **`scope`**:
+
+| `scope` | Means | What happens next |
+|---|---|---|
+| `implementation` | Same outcome, different shape. No criterion is affected | Nothing. You continue. It is on the record and nobody is interrupted |
+| `plan` | A step or its ordering is wrong, but the criteria still hold | The planner amends the affected steps. The reviewer looks only at the delta |
+| `criteria` | A criterion cannot be met, or was wrong | Stop. `blocked: true`. This reaches Quan |
+
+Classify honestly and do not inflate. An `implementation` deviation escalated to `criteria` costs a
+round trip through two roles and a human. Under-classify and the test lane catches you: scenarios
+are written from the criteria, so a criterion you quietly broke fails a test.
+
+Collect deviations and keep going where you can. Do not stop at the first one unless it is
+`criteria`-scoped — reporting five together costs one amendment cycle instead of five.
 
 A reported deviation is a good outcome. Forcing the plan onto a codebase that does not match it
 produces something that looks right, sometimes passes tests, and is wrong.

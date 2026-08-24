@@ -2,7 +2,7 @@ import { Type, type Static } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { Pool } from "pg";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, relative, isAbsolute } from "node:path";
 
 const LEDGER_TYPES = [
   "plan",
@@ -175,9 +175,14 @@ export default definePluginEntry({
             );
           }
           if (projectRoot !== undefined) {
-            const abs = resolve(projectRoot, loc.path);
-            // Reject traversal out of the project as well as nonexistent files.
-            if (!abs.startsWith(resolve(projectRoot)) || !existsSync(abs)) {
+            // `startsWith` on the resolved root was wrong: a sibling whose name extends
+            // the root name — /…/apps/remi-old/x against a root of /…/apps/remi — passed
+            // containment. Found by the plan reviewer during the first real pipeline run
+            // and verified independently. `relative` is the correct test: inside means a
+            // relative path that neither escapes with ".." nor is itself absolute.
+            const rel = relative(resolve(projectRoot), resolve(projectRoot, loc.path));
+            const inside = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+            if (!inside || !existsSync(resolve(projectRoot, loc.path))) {
               bad.push(loc.path);
             }
           }

@@ -1,0 +1,15 @@
+{
+  "name": "remi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A voice-first personal assistant and development environment",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  },
+  "engines": {
+    "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+  }
+}

@@ -110,7 +110,7 @@ config.plugins.entries.remi = {
 // auth store, not here.
 config.plugins.entries.deepseek = { ...(config.plugins.entries.deepseek ?? {}), enabled: true };
 
-function applyAgent({ id, model, thinking, codeMode, profile, contractDir, workspace, projectAccess }) {
+function applyAgent({ id, model, thinking, codeMode, profile, contractDir, workspace, projectAccess, sandboxImage }) {
   const ws = workspace ?? join(stateDir, `workspace-${id}`);
   const entry = entries[id] ?? {};
 
@@ -124,11 +124,19 @@ function applyAgent({ id, model, thinking, codeMode, profile, contractDir, works
 
   // Bind the project at its identical host path, so a relative path means the same
   // thing inside and outside the container and D10 validation stays coherent.
+  const docker = {};
   if (projectAccess === "ro" || projectAccess === "rw") {
-    entry.sandbox = { docker: { binds: [`${projectRoot}:${projectRoot}:${projectAccess}`] } };
-  } else {
-    delete entry.sandbox;
+    docker.binds = [`${projectRoot}:${projectRoot}:${projectAccess}`];
   }
+  // The two roles that write and run code need Node. The base image has none, and with
+  // network "none" they cannot install it during a turn, so it has to be in the image.
+  if (sandboxImage) {
+    const resolved = spec.sandboxImages?.[sandboxImage];
+    if (!resolved) throw new Error(`unknown sandboxImage "${sandboxImage}" for role ${id}`);
+    docker.image = resolved;
+  }
+  if (Object.keys(docker).length > 0) entry.sandbox = { docker };
+  else delete entry.sandbox;
   entries[id] = entry;
 
   const src = join(repo, "roles", contractDir, "AGENTS.md");
@@ -138,7 +146,7 @@ function applyAgent({ id, model, thinking, codeMode, profile, contractDir, works
     copyFileSync(src, join(ws, "AGENTS.md"));
   }
   applied.push({ id, model, thinking, codeMode, profile: profile ?? "(inherit)",
-                 project: projectAccess ?? "none" });
+                 project: projectAccess ?? "none", image: sandboxImage ?? "default" });
 }
 
 // Orchestrator keeps the default workspace; it is the session Quan talks to.
