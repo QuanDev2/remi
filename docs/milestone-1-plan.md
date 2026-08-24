@@ -1,8 +1,46 @@
 # Milestone 1 — Agent team + ledger, in plain text
 
-**Status:** planned, nothing built
-**Scope:** the eight-role pipeline and the shared ledger, driven from the Gateway in text. No voice, no phone, no briefing style work.
-**Foundation inspected:** `openclaw/openclaw` @ `0d727c3a`
+**Scope:** the eight-role pipeline plus a briefer, and the shared ledger, driven from the Gateway in text. No voice, no phone, no briefing-style work.
+**Running on:** `openclaw@beta` `2026.8.1-beta.3`. The beta channel is required, not preferred — see D1 and step 1.
+
+---
+
+## Where this stands
+
+Read this first. Setup instructions are in [SETUP.md](SETUP.md).
+
+| Step | State |
+|---|---|
+| 1 — Swarm spike | **done.** Blocked on stable, passed on `@beta` |
+| 2 — Ledger | **done.** Postgres, two tables, six indexes, migration committed |
+| 3 — Plugin | **done.** `ledger_write` / `ledger_query`, child-callable, citation guard |
+| 4 — Nine role configs | **done.** All nine verified in character across two providers |
+| — Sandbox (D11) | **done.** Containers, one project bind, no network egress |
+| **5 — Phase-1 script and the gate** | **next** |
+| 6 — Phase-2 script | after 5 |
+
+### Next action
+
+Write `remi-plan.ts`: goal setter → planner → plan reviewer → ledger rows → PM brief → exit.
+Run it against one small real change to this repository. Its criterion is under Step 5 below.
+
+Two open questions to settle while doing it:
+
+1. **Reviewer thinking level, and whether `xhigh` is honoured at all.** `xhigh` measured 212 s
+   against `off` at 42 s on the same agent, which looked like proof the level was being applied.
+   It is not proof: that run spent its time searching the filesystem for files that did not exist
+   (D10), so the latency gap measures thrashing, not reasoning. The provider does advertise the
+   full ladder, but the behavioural evidence is void. Re-measure with a real repo mounted and the
+   root stated. `high` may be the better trade.
+2. **Worker tool profiles.** Roles carry the full `coding` profile, including tools no lane
+   contract mentions — `automations` alone is roughly 15% of the schema payload. Trim to observed
+   need after watching a real run, not before. See the note under D-notes on codeMode.
+
+### What is not in this repository
+
+`apply-roles.mjs` reproduces all OpenClaw configuration from `roles/roles.json`. It cannot
+reproduce: the npm install, the two provider credentials, the sandbox image build, the ledger
+container, or the `--link` plugin install. Those are steps 1–4 of SETUP.md.
 
 ---
 
@@ -551,7 +589,7 @@ Five layers had to be peeled, and each is a reusable finding:
 
 **S5 confirmed stronger than recorded.** Standing intent stated in the prompt was **not** sufficient — the orchestrator still stopped twice to ask before spawning a side-effecting child. It must go in the orchestrator's `AGENTS.md`, or be handled by a `before_tool_call` hook. Notably its caution was useful both times: it caught a real bug in my probe and insisted on a tagged, deletable test row.
 
-### Step 4 — Nine role configs — **DONE 2026-08-24 for 7 of 9; 2 pending credentials**
+### Step 4 — Nine role configs — **DONE 2026-08-24**
 
 Applied by `scripts/apply-roles.mjs` from `roles/roles.json`, with each role's lane contract in
 `roles/<id>/AGENTS.md` copied into its workspace. Idempotent and re-runnable, so the roster is
@@ -559,11 +597,11 @@ reproducible rather than hand-built. `--dry-run` prints the table without writin
 
 *Criterion:* `openclaw agents list` shows all nine; each responds in character to a direct probe; every role is a permitted spawn target.
 
-**Met for the seven Anthropic-backed roles.** All nine appear in `openclaw agents list` with lane contracts in place. Probed five concurrently via `Promise.all` at width 5 — all five answered in character, and their disclaimers interlock exactly at the seams: goal-setter disclaims sequencing to the planner, planner disclaims code to the executor, test-planner disclaims test code to the test-executor, briefer disclaims judgement to the upstream `severity`/`needs_human` flags. Per-call `thinking` at `high`/`medium`/`low`/`off` all produced clean structured output.
+**Met, all nine.** All nine appear in `openclaw agents list` with lane contracts in place. Probed the seven Anthropic-backed roles concurrently via `Promise.all` at width 5 — all answered in character, and their disclaimers interlock exactly at the seams: goal-setter disclaims sequencing to the planner, planner disclaims code to the executor, test-planner disclaims test code to the test-executor, briefer disclaims judgement to the upstream `severity`/`needs_human` flags. Per-call `thinking` at `high`/`medium`/`low`/`off` all produced clean structured output.
 
-**Pending:** `plan-reviewer` and `code-reviewer` run on `deepseek/deepseek-v4-pro` and need `DEEPSEEK_API_KEY`. Installed the official provider plugin (`clawhub:@openclaw/deepseek-provider`, v2026.7.1), which exposes `deepseek-v4-pro`, `v4-flash`, `deepseek-chat`, `deepseek-reasoner`. Re-run the same in-character probe once the key is set, so that a credential failure cannot mask a lane-contract mistake.
+**The two DeepSeek reviewers passed the identical probe** once `DEEPSEEK_API_KEY` was in the auth store — 2/2, concurrent, at `thinking: "xhigh"`. Their seams close the chain: `plan-reviewer` disclaims rewriting to the planner, `code-reviewer` disclaims behavioural correctness to the test-executor and gates itself on "once tests are green". Structured output works cross-provider, so Swarm's forced `structured_output` path is not Anthropic-specific.
 
-**Reviewers moved from OpenAI to DeepSeek.** Same rationale — decorrelated blind spots — with a provider Quan already has. DeepSeek V4 supports `/think xhigh` and `max`, so the reviewers keep their reasoning budget.
+**Reviewers moved from OpenAI to DeepSeek.** Same rationale — decorrelated blind spots — with a provider Quan already has. Installed via `clawhub:@openclaw/deepseek-provider`. DeepSeek V4 advertises the full ladder through `xhigh` and `max`, default `high`.
 
 **Config findings:**
 

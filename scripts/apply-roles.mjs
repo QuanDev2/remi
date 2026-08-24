@@ -76,6 +76,35 @@ config.tools.sandbox = {
   tools: { alsoAllow: ["ledger_write", "ledger_query"] },
 };
 
+// Swarm supplies agents.run / phase / log, which the pipeline scripts are built on.
+// Without it the orchestrator cannot spawn a role or await its typed result.
+config.tools.swarm = true;
+
+// Elevated exec bypasses the sandbox by design. It defaults to requiring an
+// allowlisted sender, but that is not a default worth relying on.
+config.tools.elevated = { ...(config.tools.elevated ?? {}), enabled: false };
+
+// The ledger plugin is linked from this repo (see docs/SETUP.md) and needs both a
+// connection string and the project root that citation validation checks against.
+config.plugins ??= {};
+config.plugins.entries ??= {};
+config.plugins.entries.remi = {
+  ...(config.plugins.entries.remi ?? {}),
+  enabled: true,
+  config: {
+    ...(config.plugins.entries.remi?.config ?? {}),
+    connectionString:
+      process.env.REMI_LEDGER_URL ??
+      config.plugins.entries.remi?.config?.connectionString ??
+      "postgresql://remi:remi@127.0.0.1:55432/remi",
+    projectRoot,
+  },
+};
+
+// Provider plugin for the two cross-family reviewers. The API key lives in the
+// auth store, not here.
+config.plugins.entries.deepseek = { ...(config.plugins.entries.deepseek ?? {}), enabled: true };
+
 function applyAgent({ id, model, thinking, codeMode, profile, contractDir, workspace, projectAccess }) {
   const ws = workspace ?? join(stateDir, `workspace-${id}`);
   const entry = entries[id] ?? {};
