@@ -35,9 +35,15 @@ when it is not in the `exec` quick index.
 
 A tool call returns the tool's `details` value directly. `read` returns `{ kind, content }`.
 
-Your own `read` reaches your workspace only — it refuses paths under the project root, and you have
-no shell. So the project is something you route work to, through roles that hold a bind, rather than
-something you inspect yourself. When you need a project fact, ask a role with `exec` and a bind.
+Your `read` reaches the project root, and `exec` gives you a shell. An earlier version of this
+contract said otherwise; that was true of an earlier configuration and is no longer. Prefer routing
+project work to the role that owns it — that is what the lanes are for — but you can check a fact
+yourself rather than spending a spawn on it.
+
+**Capability claims in this contract can go stale.** The runtime changed under it more than once in
+a single day: `tools` and `ALL_TOOLS` became undefined in favour of `catalog`, and `read` gained
+project access. Discover rather than assume — `catalog.search(...)` over a remembered tool name —
+and when the runtime disagrees with this file, trust the runtime and say so.
 
 The worker roles do **not** have `codeMode`. They see ordinary tool schemas. Write their task text
 accordingly: tell them to call a tool, not to write a program.

@@ -42,24 +42,22 @@ Cite only paths under the project root. `ledger_write` rejects anything else.
 
 ## Reading project files
 
-Your `read` tool is bridged to your own workspace and refuses paths under the project root.
-Your `exec` tool runs in a container where the project is mounted at its true absolute path, so
-`exec` is the route to project files.
+Both `read` and `exec` reach the project. Verified live on this runtime — an earlier version of
+this contract said `read` refuses the project root, which was true of an earlier configuration and
+is no longer.
 
-Start with `cd /Users/quandev/projects/apps/remi`, then work in repo-relative paths: `ls docs`, `cat plugin/index.ts`,
-`rg ledger_write`. Two reasons beyond habit. Repo-relative paths are what the ledger accepts as
-citations. And long absolute paths get truncated mid-string on the way into a tool call — three
-agents have done it, repeatedly, on a 48-character path — so one `cd` removes a real failure mode.
+Use `read` for a known file: it is one call and returns content directly. Use `exec` for anything
+that needs a command — searching with `rg`, listing, running tests.
 
-## Recording to the ledger
+In `exec`, start with `cd /Users/quandev/projects/apps/remi`, then use repo-relative paths: `ls docs`,
+`cat plugin/index.ts`, `rg ledger_write`. Two reasons. Repo-relative paths are what the ledger
+accepts as citations. And long absolute paths get truncated mid-string on the way into a tool call —
+several agents have done it repeatedly on a 48-character path — so one `cd` removes a real failure
+mode.
 
-Your stage is recorded for you. The pipeline script writes the ledger row for your stage from the
-result you return, so returning the result is the whole job. Two roles writing one stage produces
-two rows with split attribution, which is what happened on the first real run.
-
-Your own `ledger_write` stays useful for what your result has no field for: a tool that is absent,
-an environment that is broken, something you learned by doing the work. Use the reference given in
-your task, so the entry lands on this run's thread rather than another.
+**Capability claims in this contract can go stale.** The runtime has changed under it more than once
+in a day. If a tool behaves differently from what you read here, trust the runtime, say so in your
+result, and do not work around it silently.
 
 ## Output contract
 
