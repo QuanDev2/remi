@@ -1,0 +1,33 @@
+{
+  "name": "openclaw-plugin-remi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remi ledger tools for the eight-role agent pipeline",
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.13.1",
+    "typebox": "1.1.39"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.8.1-beta.3"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.8.1-beta.3",
+      "minGatewayVersion": "2026.8.1-beta.3"
+    },
+    "build": {
+      "openclawVersion": "2026.8.1-beta.3",
+      "pluginSdkVersion": "2026.8.1-beta.3"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "remi",
+  "name": "Remi",
+  "description": "Shared ledger for the Remi agent pipeline: durable audit trail, context reconstruction, and prior-findings recall across fresh sessions.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "ledger_write",
+      "ledger_query"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "connectionString": {
+        "type": "string",
+        "description": "Postgres connection string for the ledger. Falls back to REMI_LEDGER_URL."
+      },
+      "poolMax": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 4,
+        "description": "Max Postgres pool connections. Pipeline peak width is 2, so 4 is ample."
+      },
+      "projectRoot": {
+        "type": "string",
+        "description": "Absolute path to the project under review. When set, ledger_write rejects any cited location whose path does not exist, so a fabricated file citation cannot enter the ledger. Falls back to REMI_PROJECT_ROOT."
+      }
+    }
+  }
+}

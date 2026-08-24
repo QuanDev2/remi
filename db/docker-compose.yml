@@ -1,0 +1,24 @@
+services:
+  ledger:
+    image: postgres:17-alpine
+    container_name: remi-ledger
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: remi
+      POSTGRES_USER: remi
+      POSTGRES_PASSWORD: ${REMI_LEDGER_PASSWORD:-remi}
+    ports:
+      # 55432 on the host to avoid colliding with a local Postgres or Pholio's.
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - remi-ledger-data:/var/lib/postgresql/data
+      # Applied in filename order on first boot of an empty data volume only.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remi -d remi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  remi-ledger-data:
