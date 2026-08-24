@@ -11,10 +11,14 @@
     "",
     "projectAccess controls what the sandbox mounts:",
     "  none  no project bind at all. The role works from its task text.",
-    "  ro    project mounted read-only. Reviewers and the planner.",
+    "  ro    project mounted read-only. The interviewer, reviewers and the planner.",
     "  rw    project mounted writable. Only the roles that must change files.",
     "The bind uses the identical host path inside the container so that a cited",
-    "relative path means the same thing on both sides, and D10 validation holds."
+    "relative path means the same thing on both sides, and D10 validation holds.",
+    "",
+    "The goal setter runs on Opus and holds read access because it interviews Quan.",
+    "Everything downstream is bounded by criteria quality, and a question a glance at",
+    "the code would have answered wastes the one resource it spends: his attention."
   ],
   "orchestrator": {
     "id": "main",
@@ -27,11 +31,11 @@
     {
       "id": "goal-setter",
       "n": 1,
-      "model": "anthropic/claude-sonnet-5",
+      "model": "anthropic/claude-opus-5",
       "thinking": "high",
       "codeMode": false,
-      "profile": "minimal",
-      "projectAccess": "none"
+      "profile": "coding",
+      "projectAccess": "ro"
     },
     {
       "id": "planner",

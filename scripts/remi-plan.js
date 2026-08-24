@@ -34,45 +34,19 @@
 // request approval). `remi-gate.js` records his answer; `remi-build.js` refuses to
 // start without it.
 
-const REQUEST = String(input && input.request ? input.request : "").trim();
-if (REQUEST.length === 0) {
-  return {
-    status: "blocked",
-    reason: "No request text supplied. Call this script as run({ request: \"...\" }).",
-  };
-}
 
 const cfg = JSON.parse((await read({ path: "remi-roles.json" })).content);
 const ROOT = cfg.projectRoot;
 const thinkingFor = (role) => cfg.thinking[role];
 
-const reference =
-  input && input.reference ? String(input.reference) : mintReference(REQUEST);
-
-/** An opaque, readable feature id that threads every row of this run together. */
-function mintReference(text) {
-  // First real words, not first words: the maiden run minted
-  // `the-repository-has-20260824-i2m`, which identifies nothing. A reference is
-  // opaque to the pipeline but it is read by humans in psql and in git log.
-  const skip = {
-    the: 1, and: 1, for: 1, has: 1, have: 1, are: 1, this: 1, that: 1, with: 1,
-    from: 1, into: 1, its: 1, was: 1, but: 1, not: 1, any: 1, all: 1, our: 1,
-    can: 1, should: 1, would: 1, needs: 1, need: 1, there: 1, they: 1, some: 1,
-    make: 1, give: 1, add: 1, run: 1, use: 1,
+const reference = String(input && input.reference ? input.reference : "").trim();
+if (reference.length === 0) {
+  return {
+    status: "blocked",
+    reason:
+      "A reference is required. remi-interview.js mints it and freezes the criteria; " +
+      "pass the reference it returned.",
   };
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .split("-")
-    .filter(function (w) {
-      return w.length > 2 && !skip[w];
-    })
-    .slice(0, 3)
-    .join("-");
-  const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const salt = Math.floor(Math.random() * 46656).toString(36);
-  return (words || "change") + "-" + day + "-" + salt;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,20 +75,6 @@ function obj(properties) {
 }
 
 const STATUS = enumOf(["ok", "blocked"]);
-
-const GoalSchema = obj({
-  status: STATUS,
-  reason: str,
-  goal: str,
-  criteria: {
-    type: "array",
-    items: obj({
-      id: str,
-      statement: str,
-      level: enumOf(["unit", "integration", "e2e"]),
-    }),
-  },
-});
 
 const PlanSchema = obj({
   status: STATUS,
@@ -219,32 +179,6 @@ the result is the whole job.
 Your own ledger_write stays useful for what your result has no field for — an absent
 tool, a broken environment, something you learned by doing the work. Those entries use
 reference ${reference} so they stay on this thread.`;
-}
-
-function goalPrompt() {
-  return `You are role 1, the goal setter, opening a new pipeline run.
-
-Quan's request, verbatim between the markers:
-
-<<<REQUEST
-${REQUEST}
-REQUEST
-
-Produce one goal statement and a list of acceptance criteria. A criterion is
-verifiable when a test passes or fails on it with no judgement call: "a POST with a
-missing title returns 400 and the body is unchanged" rather than "validation is
-handled properly". Tag each criterion unit, integration, or e2e so the test planner
-knows the level. Criteria describe observable behaviour, which is what lets them
-outlive any particular implementation.
-
-Expected answers, both correct:
-- The request supports at least one verifiable criterion: status "ok", reason "",
-  goal set, criteria holding one entry per criterion.
-- The request is too vague to yield a verifiable criterion: status "blocked", reason
-  naming the specific ambiguity, goal holding your best restatement, criteria empty.
-  Naming the ambiguity is more useful here than filling the gap with a guess.
-${ledgerNote("the goal setter")}
-${ONE_CALL}`;
 }
 
 function planPrompt(goal) {
@@ -459,41 +393,49 @@ async function briefAndReturn(outcome) {
 // ---------------------------------------------------------------------------
 
 log("Phase 1 on reference " + reference);
-phase("1 Goal and criteria");
+phase("1 Criteria");
 
-const goal = await agents.run(goalPrompt(), {
-  agentId: "goal-setter",
-  thinking: thinkingFor("goal-setter"),
-  label: "goal:" + reference,
-  schema: GoalSchema,
-});
-
-// The goal row is the decision about what is being built, and it freezes the
-// criteria that the test planner will later work from without seeing the plan.
-const goalRow = await writeEntry({
-  agent: "goal-setter",
-  type: "decision",
+// The criteria are settled before this script runs, by remi-interview.js. That split
+// exists because the goal setter has to talk to Quan and a swarm child cannot: it gets
+// one prompt and dies with no channel to a human. So the interview is its own boundary,
+// like the gate, and phase 1 starts from its frozen output.
+const frozen = await ledger_query({
   reference: reference,
-  status: goal.status === "ok" ? "resolved" : "open",
-  severity: goal.status === "ok" ? "info" : "blocker",
-  needs_human: goal.status !== "ok",
-  content:
-    goal.status === "ok"
-      ? "Goal: " + goal.goal + " (" + goal.criteria.length + " acceptance criteria)"
-      : "Goal setting is blocked: " + goal.reason,
-  details: { goal: goal.goal, criteria: goal.criteria, request: REQUEST },
+  type: "decision",
+  status: "resolved",
+  limit: 10,
 });
 
-if (goal.status !== "ok" || goal.criteria.length === 0) {
-  log("Stopping before planning: the request needs one clarification.");
-  return await briefAndReturn({
-    stopped_at: "goal",
-    gate_entry_id: null,
-    goal_entry_id: goalRow.id,
-  });
+const goalRow = (frozen.entries || []).filter(function (r) {
+  return r.agent === "goal-setter" && r.details && Array.isArray(r.details.criteria);
+})[0];
+
+if (!goalRow) {
+  return {
+    status: "blocked",
+    reason:
+      "No frozen criteria for reference " +
+      reference +
+      ". Run remi-interview.js until it returns status \"ready\", then run this again.",
+  };
 }
 
-log(goal.criteria.length + " criteria frozen.");
+const goal = {
+  status: "ok",
+  goal: goalRow.details.goal,
+  criteria: goalRow.details.criteria,
+  non_goals: goalRow.details.non_goals || [],
+  reason: "",
+};
+
+if (goal.criteria.length === 0) {
+  return {
+    status: "blocked",
+    reason: "The frozen criteria row for " + reference + " holds no criteria.",
+  };
+}
+
+log(goal.criteria.length + " criteria read from entry " + goalRow.id + ".");
 phase("2 Plan");
 
 const plan = await agents.run(planPrompt(goal), {
@@ -596,20 +538,27 @@ for (const item of review.items) {
 log(review.items.length + " findings, worst severity " + worst + ".");
 phase("4 Gate");
 
-// The gate row. Status stays `open` and needs_human is true: this is the request for
-// approval, not the approval. `remi-gate.js` appends Quan's answer as a second
-// approval row, and phase 2 refuses to start until it finds one marked approved.
+// The gate row. Status stays `open`: this is the request for approval, not the approval.
+// `remi-gate.js` appends Quan's answer as a second approval row, and phase 2 refuses to
+// start until it finds one marked approved.
+//
+// `needs_human` is set from the worst review severity rather than always true. Quan is
+// interviewed into the criteria before any of this runs, so by the gate he already
+// understands the problem; a plan the reviewer found nothing blocking in does not need
+// him to read it. A blocker still stops and waits. This is the difference between a gate
+// that protects the criteria and a gate that just adds a wait.
 //
 // `details` carries the full plan because the ledger is what phase 2 reads. The
 // executor's instructions come from this row plus Quan's direction, which is what
 // makes his redirection provably change the work rather than merely be recorded.
+const gateNeedsHuman = worst === "blocker";
 const gateRow = await writeEntry({
   agent: "orchestrator",
   type: "approval",
   reference: reference,
   status: "open",
   severity: worst,
-  needs_human: true,
+  needs_human: gateNeedsHuman,
   content:
     "Gate: plan for " +
     reference +
