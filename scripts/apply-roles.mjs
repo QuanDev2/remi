@@ -7,7 +7,12 @@
 // AGENTS.md lane contract in, sets model / thinking / codeMode / tool profile,
 // and allows the orchestrator to spawn every role.
 //
-// Idempotent: re-running overwrites role config and lane contracts in place.
+// It also deploys the pipeline scripts and a derived remi-roles.json into the
+// orchestrator's workspace. That is the only route by which they reach the runtime:
+// the orchestrator's `read` tool is confined to its own workspace, and Code Mode
+// rejects `import`, so a committed script is reachable only if it is copied there.
+//
+// Idempotent: re-running overwrites role config, lane contracts and scripts in place.
 // Restart the gateway afterwards.
 
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync } from "node:fs";
@@ -151,6 +156,44 @@ for (const role of spec.roles) {
   applyAgent({ ...role, contractDir: role.id });
 }
 
+// Deploy the pipeline scripts and the role table the orchestrator reads at runtime.
+//
+// Two things make this necessary rather than tidy. The orchestrator's `read` tool is
+// bridged to its own workspace and refuses paths under the project root, and Code Mode
+// rejects `import`, so a script in this repository is unreachable from a cell unless it
+// is copied here. And a script the model has to retype is a script it will corrupt:
+// `main` and the planner each truncated the middle of a 48-character path on every
+// attempt. Source travels by file; only a four-line bootstrap goes through the prompt.
+//
+// remi-roles.json carries the per-call thinking levels, which are deliberately not
+// agent-entry keys (three roles share one model at three levels). roles.json stays the
+// single source of truth; this is a derived projection of it.
+const orchestratorWorkspace = entries[spec.orchestrator.id].workspace;
+const pipelineScripts = ["remi-plan.js", "remi-gate.js"];
+const deployed = [];
+
+for (const name of pipelineScripts) {
+  const src = join(repo, "scripts", name);
+  if (!existsSync(src)) throw new Error(`missing pipeline script: ${src}`);
+  if (!dryRun) copyFileSync(src, join(orchestratorWorkspace, name));
+  deployed.push(name);
+}
+
+const roleTable = {
+  projectRoot,
+  thinking: Object.fromEntries([
+    [spec.orchestrator.id, spec.orchestrator.thinking],
+    ...spec.roles.map((r) => [r.id, r.thinking]),
+  ]),
+};
+if (!dryRun) {
+  writeFileSync(
+    join(orchestratorWorkspace, "remi-roles.json"),
+    `${JSON.stringify(roleTable, null, 2)}\n`,
+  );
+}
+deployed.push("remi-roles.json");
+
 // The orchestrator may spawn every role, and itself.
 entries[spec.orchestrator.id].subagents = {
   ...(entries[spec.orchestrator.id].subagents ?? {}),
@@ -172,4 +215,5 @@ if (dryRun) {
 console.table(applied);
 console.log(`\nallowAgents: ${entries[spec.orchestrator.id].subagents.allowAgents.join(", ")}`);
 console.log(`models permitted: ${config.agents.defaults.modelPolicy.allow.length}`);
+console.log(`deployed to ${orchestratorWorkspace}: ${deployed.join(", ")}`);
 console.log(dryRun ? "\nRe-run without --dry-run to apply." : `\nWrote ${configPath}. Restart the gateway.`);

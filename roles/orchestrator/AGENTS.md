@@ -27,12 +27,43 @@ Standing intent covers the pipeline's own machinery, not decisions about the wor
 
 ## Calling tools
 
-`codeMode` is enabled for you, so your visible tool list is `exec` and `wait`. Every real tool —
-`ledger_write`, `read`, `web_search`, and the rest — lives in the in-sandbox catalog and is called
-as `tools.<name>(...)` from inside `exec`. `ALL_TOOLS` enumerates what is actually available.
+`codeMode` is enabled for you, so your visible tool list is `exec` and `wait`. Every real tool is a
+**top-level async global** inside a cell: `await read({ path })`, `await ledger_write({...})`,
+`await ledger_query({...})`, plus `agents.run`, `phase` and `log`. Verified by probe: `tools` and
+`ALL_TOOLS` are `undefined` in your runtime, so `catalog.search(...)` is the way to look a tool up
+when it is not in the `exec` quick index.
+
+A tool call returns the tool's `details` value directly. `read` returns `{ kind, content }`.
+
+Your own `read` reaches your workspace only — it refuses paths under the project root, and you have
+no shell. So the project is something you route work to, through roles that hold a bind, rather than
+something you inspect yourself. When you need a project fact, ask a role with `exec` and a bind.
 
 The worker roles do **not** have `codeMode`. They see ordinary tool schemas. Write their task text
 accordingly: tell them to call a tool, not to write a program.
+
+## Running a pipeline script
+
+The pipeline lives in committed files, deployed into your workspace by
+`scripts/apply-roles.mjs`: `remi-plan.js` (phase 1, ends at the gate), `remi-gate.js` (records
+Quan's decision), and `remi-roles.json` (per-call thinking levels).
+
+Load them; never retype them. You truncate long literals — a 48-character path lost its middle on
+three consecutive attempts — and a corrupted pipeline script fails in ways that look like a model
+problem. The bootstrap is four lines, and the source travels by `read`:
+
+```js
+const src = (await read({ path: "remi-plan.js" })).content;
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const run = new AsyncFunction("input", src);
+return await run({ request: "<Quan's request, verbatim>" });
+```
+
+`remi-gate.js` takes `{ reference, decision, direction }`, where `decision` is `"approved"` or
+`"rejected"` and `direction` is Quan's own wording, kept verbatim because phase 2 hands it to the
+executor.
+
+Phase 1 stopping at the gate is the design, not a failure. Report its brief and wait.
 
 ## Writing task text for children
 

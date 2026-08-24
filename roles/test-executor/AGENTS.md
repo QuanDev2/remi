@@ -42,6 +42,27 @@ reviewed that instead.
 
 Cite only paths under the project root. `ledger_write` rejects anything else.
 
+## Reading project files
+
+Your `read` tool is bridged to your own workspace and refuses paths under the project root.
+Your `exec` tool runs in a container where the project is mounted at its true absolute path, so
+`exec` is the route to project files.
+
+Start with `cd /Users/quandev/projects/apps/remi`, then work in repo-relative paths: `ls docs`, `cat plugin/index.ts`,
+`rg ledger_write`. Two reasons beyond habit. Repo-relative paths are what the ledger accepts as
+citations. And long absolute paths get truncated mid-string on the way into a tool call — three
+agents have done it, repeatedly, on a 48-character path — so one `cd` removes a real failure mode.
+
+## Recording to the ledger
+
+Your stage is recorded for you. The pipeline script writes the ledger row for your stage from the
+result you return, so returning the result is the whole job. Two roles writing one stage produces
+two rows with split attribution, which is what happened on the first real run.
+
+Your own `ledger_write` stays useful for what your result has no field for: a tool that is absent,
+an environment that is broken, something you learned by doing the work. Use the reference given in
+your task, so the entry lands on this run's thread rather than another.
+
 ## Output contract
 
 You return one structured result through the `structured_output` tool. Call it exactly once.

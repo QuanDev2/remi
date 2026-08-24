@@ -150,6 +150,37 @@ openclaw agent --agent plan-reviewer --message \
 The project should be the only visible entry under `projects/apps`, and `~/.ssh` should
 not exist.
 
+## 7. Run phase 1
+
+`apply-roles.mjs` deploys `remi-plan.js`, `remi-gate.js` and a derived `remi-roles.json` into the
+orchestrator's workspace. That deployment is the only route by which a committed script reaches the
+runtime: the orchestrator's `read` tool is confined to its own workspace, and Code Mode rejects
+`import` (D12).
+
+```bash
+openclaw agent --agent main --timeout 900 --message \
+  "Run phase 1 of the pipeline on this request, following the Running a pipeline script section of
+   your AGENTS.md: <the request, in Quan's words>"
+```
+
+Expect roughly ten minutes and a brief that ends at the gate. Then record the decision:
+
+```bash
+openclaw agent --agent main --timeout 300 --message \
+  "Run remi-gate.js with reference <ref>, decision approved, direction '<your words>'"
+```
+
+Verify the run from outside the sandbox rather than from the agent's summary — four self-reports
+have been wrong so far, one of them about a side effect:
+
+```bash
+docker exec remi-ledger psql -U remi -d remi -c \
+  "SELECT id,agent,type,status,severity,needs_human,left(content,90) \
+     FROM ledger WHERE reference='<ref>' ORDER BY id;"
+```
+
+Changing a pipeline script means re-running `apply-roles.mjs`; the deployed copy is what executes.
+
 ---
 
 ## Troubleshooting
@@ -162,5 +193,10 @@ not exist.
 | `model not allowed: <ref>` | Two gates: `agents.defaults.models` and `modelPolicy.allow`. The script writes both |
 | `Remi ledger is not configured` | Plugin cannot read its config, or `apply-roles.mjs` has not run |
 | `bind mount source is outside allowed roots` | `dangerouslyAllowExternalBindSources` missing; the script sets it |
-| A role reports a tool is missing | With `codeMode` on, tools live in the in-sandbox catalog, not the flat list. Enumerate `ALL_TOOLS` inside `exec` |
+| A role reports a tool is missing | With `codeMode` on, tools are top-level async globals in the cell, not a flat tool list. `tools` and `ALL_TOOLS` are `undefined`; use `catalog.search(...)` |
 | `structured_output was not called` | The child hit an error on an earlier step, or the prompt used negations. See D9 |
+| `Path escapes sandbox root` from `read` | Expected. `read` reaches the agent's own workspace; project files go through `exec` after `cd <project root>` |
+| A role reports the project as empty | Its prompt sent it to `read` instead of `exec`, or it has `projectAccess: none` |
+| A pipeline script edit has no effect | The deployed copy in the orchestrator's workspace is what runs. Re-run `apply-roles.mjs` |
+| `These paths do not exist in the project` | Citation validation. A cited file is absent — often a file the plan proposes to create. The finding is kept and flagged; the citation is dropped |
+| `No open approval row exists for reference` | `remi-gate.js` ran before `remi-plan.js`, or against the wrong reference |

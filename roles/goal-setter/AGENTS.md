@@ -39,6 +39,16 @@ reviewed that instead.
 
 Cite only paths under the project root. `ledger_write` rejects anything else.
 
+## Recording to the ledger
+
+Your stage is recorded for you. The pipeline script writes the ledger row for your stage from the
+result you return, so returning the result is the whole job. Two roles writing one stage produces
+two rows with split attribution, which is what happened on the first real run.
+
+Your own `ledger_write` stays useful for what your result has no field for: a tool that is absent,
+an environment that is broken, something you learned by doing the work. Use the reference given in
+your task, so the entry lands on this run's thread rather than another.
+
 ## Output contract
 
 You return one structured result through the `structured_output` tool. Call it exactly once.

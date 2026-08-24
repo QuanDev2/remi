@@ -16,20 +16,23 @@ Read this first. Setup instructions are in [SETUP.md](SETUP.md).
 | 3 — Plugin | **done.** `ledger_write` / `ledger_query`, child-callable, citation guard |
 | 4 — Nine role configs | **done.** All nine verified in character across two providers |
 | — Sandbox (D11) | **done.** Containers, one project bind, no network egress |
-| **5 — Phase-1 script and the gate** | **next** |
-| 6 — Phase-2 script | after 5 |
+| 5 — Phase-1 script and the gate | **done.** `remi-plan.js` ran end to end; `remi-gate.js` records the decision |
+| **6 — Phase-2 script** | **next**, behind two blockers |
 
 ### Next action
 
-Remaining tasks, in order. Items 1 and 3 are independent of each other and of 2.
+Remaining tasks, in order. Items 1 and 2 are independent of each other.
 
 | # | Task | Blocking |
 |---|---|---|
 | 1 | Node-capable sandbox image for `executor` and `test-executor` | **blocks step 6** |
-| 2 | Write `remi-plan.ts` — step 5, the phase-1 script and the gate | — |
-| 3 | Root `package.json` and a test runner, so the test lane has a target | **blocks step 6** |
-| 4 | Write `remi-build.ts` — step 6 | needs 1 and 3 |
-| 5 | One end-to-end run on a real change, Quan as the gate | the acceptance criterion |
+| 2 | Root `package.json` and a test runner, so the test lane has a target | **blocks step 6** |
+| 3 | Write `remi-build.js` — step 6 | needs 1 and 2 |
+| 4 | One end-to-end run on a real change, Quan as the gate | the acceptance criterion |
+
+Item 2 is already planned: phase 1 was run against it as step 5's own smoke test, and its plan is
+sitting at gate row 35 on reference `the-repository-has-20260824-i2m` awaiting a decision. Approving
+it there is what makes the pipeline build its own test target, which is the point of self-hosting.
 
 **Handover sequencing, decided.** Step 5 gets written conventionally rather than by Remi. Having
 Remi invent the pipeline that is meant to constrain it inverts the point, and there would be no
@@ -50,9 +53,14 @@ Two open questions to settle while doing it:
 
 ### Verifying an agent's claims about itself
 
-Three times in one session an agent confidently misdescribed its own environment: it reported a
-tool as available while its own catalog proved otherwise, reported reviewing this project while
-reading another, and reported running on the host while `sandbox explain` showed it containerised.
+Four times now an agent has confidently misdescribed itself: it reported a tool as available while
+its own catalog proved otherwise, reported reviewing this project while reading another, reported
+running on the host while `sandbox explain` showed it containerised, and reported that
+`remi-gate.js` had created a ledger row that had in fact been seeded in Postgres beforehand.
+
+The fourth is the instructive one, because the claim was about a *side effect* rather than an
+environment, and it was flattering to the code under test. Verify side effects the same way:
+from outside.
 
 Check environmental claims from outside the sandbox. `sandbox explain`, `plugins inspect`, a direct
 `psql` query, and `ls` from a host shell are all cheap. An agent's self-report is a hypothesis.
@@ -310,6 +318,54 @@ tools execute Gateway-side over the tool bridge, not through container networkin
 leaves the sandbox through an audited, schema-validated, path-checked tool, and nothing else does.
 That requires `tools.sandbox.tools.alsoAllow` to admit the plugin tools as well as global policy.
 
+### D12 — Pipeline scripts are deployed files, loaded by a four-line bootstrap
+
+The pipeline lives in `scripts/remi-plan.js` and `scripts/remi-gate.js`, committed here and copied
+into the orchestrator's workspace by `apply-roles.mjs`. The orchestrator runs them by loading the
+source and evaluating it:
+
+```js
+const src = (await read({ path: "remi-plan.js" })).content;
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+return await new AsyncFunction("input", src)({ request: "..." });
+```
+
+Three constraints force this shape, and each was measured rather than assumed:
+
+| Constraint | Evidence |
+|---|---|
+| Code Mode rejects `import` and `require` | documented, and the guest has no module loader |
+| The orchestrator's `read` reaches its own workspace only | probe: an absolute project path returns `Path escapes sandbox root` |
+| A model asked to retype a long literal corrupts it | `main` and the `planner` each truncated the middle of a 48-character path, repeatedly, in a way visible only in the resulting tool call |
+
+The third is the one that changes the design. The obvious alternative — paste the script into the
+prompt each run — puts a few thousand tokens of source through a model that has been observed
+silently mangling forty-eight characters of it. Source travels by file; only the bootstrap goes
+through the prompt.
+
+**Consequence for the artifact.** The host transpiles the *cell*, not what the cell evaluates, so
+the deployed file is plain JavaScript. `remi-plan.ts` in earlier drafts is `remi-plan.js` in fact.
+
+**What else rides along.** `apply-roles.mjs` also writes `remi-roles.json` into that workspace, a
+derived projection of `roles.json` carrying the per-call `thinking` levels. `roles.json` stays the
+single source of truth (C1), and the script reads the levels rather than hard-coding them.
+
+### D13 — The script owns stage persistence; roles record only what their schema cannot carry
+
+On the first real run, with `ledger_write` in hand and no instruction either way, the goal setter
+and the planner each recorded their own stage in addition to the script's row. The goal setter filed
+its entry against `pipeline-bringup` — an unrelated thread — as type `plan`. Two rows per stage,
+split attribution, one polluted thread.
+
+So the boundary is now stated in every task prompt and in all eight lane contracts: the script
+writes the row for each stage from the result the role returns, and returning the result is the
+whole job. A role's own `ledger_write` is reserved for what its result has no field for, on the
+reference its task names.
+
+That reservation is not a courtesy. The plan reviewer discovered that its own container has no
+`node` on `PATH` — corroborating the step-6 blocker from a second, independent direction — and no
+field of `FindingsSchema` is the place to put that.
+
 ---
 
 ## The pipeline
@@ -372,13 +428,13 @@ Both loops are bounded at 3 passes, then stop and brief. An agent stuck in a rew
 | # | Role | Model | Thinking | Tool profile |
 |---|---|---|---|---|
 | 1 | Goal setter | `anthropic/claude-sonnet-5` | `high` | minimal |
-| 2 | Planner | `anthropic/claude-opus-5` | `high` | read + search |
-| 3 | Plan reviewer | `openai/gpt-5.4` | `xhigh` | read + search |
+| 2 | Planner | `anthropic/claude-opus-5` | `high` | coding |
+| 3 | Plan reviewer | `deepseek/deepseek-v4-pro` | `xhigh` | coding |
 | 4 | Human gate | — | — | — |
 | 5 | Executor | `anthropic/claude-sonnet-5` | `high` | coding |
-| 6 | Code reviewer | `openai/gpt-5.4` | `xhigh` | read + search |
+| 6 | Code reviewer | `deepseek/deepseek-v4-pro` | `xhigh` | coding |
 | 7 | Test planner | `anthropic/claude-sonnet-5` | `medium` | minimal |
-| 8 | Test executor | `anthropic/claude-sonnet-5` | `low` | coding + exec |
+| 8 | Test executor | `anthropic/claude-sonnet-5` | `low` | coding |
 | 9 | Briefer | `anthropic/claude-haiku-4-5` | `off` | minimal |
 
 Thinking ladder is `off | minimal | low | medium | high | xhigh | max` (`src/agents/sessions/model-resolver.ts:14`). Confirm model ids with `openclaw models list`.
@@ -438,9 +494,6 @@ CREATE TABLE ledger_location (
   lines    int4multirange,
   role     text,
   PRIMARY KEY (entry_id, path)
-);
-  details      jsonb           NOT NULL DEFAULT '{}'::jsonb,
-  resolved_by  bigint          REFERENCES ledger(id)
 );
 
 CREATE INDEX ledger_reference_status_idx ON ledger (reference, status);
@@ -635,17 +688,83 @@ reproducible rather than hand-built. `--dry-run` prints the table without writin
 
 **codeMode is now orchestrator-only.** Workers get ordinary tool schemas; only `main` writes pipeline scripts. Three reasons: OpenClaw's own guidance is to keep direct tool exposure for small catalogs and models that may not reliably write short programs; worker prompts no longer need the exec-route instruction (retiring half of finding P2); and a cheap model at `low` thinking should spend its budget on its actual job, not on emitting correct JavaScript first. The shipped default is `"auto"` — per-model activation — which we override deliberately in both directions.
 
-### Step 5 — Phase 1 script and the gate
+### Step 5 — Phase 1 script and the gate — **DONE 2026-08-24**
 
-`remi-plan.ts`: goal setter → planner → plan reviewer → ledger rows → brief → exit.
+`scripts/remi-plan.js`: goal setter → planner → plan reviewer → ledger rows → brief → exit at the
+gate. `scripts/remi-gate.js` records Quan's answer. Both are deployed per D12, and the shapes they
+rely on were probed rather than assumed (D12, D13, and the file-access finding below).
 
 *Criterion:* run against one small real change to this repository. The brief surfaces the reviewer's findings. Quan redirects the plan rather than approving as-is, and the redirection lands as an `approval` row that provably alters the plan the executor later receives. Satisfies A2 and A3.
 
+**Met, with one half of A3 outstanding by construction.** The smoke test was the repository's own
+missing test target — item 2 of the next-action table, chosen so the pipeline's first act is to plan
+work the project actually needs:
+
+| Observation | Value |
+|---|---|
+| Reference | `the-repository-has-20260824-i2m` |
+| Rows written | 9, from goal `27` through gate `35` |
+| Review findings | 4, worst severity `warning` |
+| Wall clock | 619 s end to end |
+| Citation rejections | 1, and correct |
+
+**A2 is satisfied and was worth the trouble.** The brief Quan received led with the reviewer's
+findings, not with the plan: a vacuous restoration proof (`git diff` against an untracked file
+never fails), a plan whose tests exercise an extracted module while the modified `plugin/index.ts`
+goes untested, and an ambiguity that would silently move the multirange format check under a
+`projectRoot` guard. All three are things Quan would otherwise have found after the executor ran.
+
+**The citation guard fired in a real run, and the fallback earned its place.** The reviewer cited
+`test/citation.test.mjs` — a file the plan proposes to *create*. `ledger_write` rejected the row.
+The script's fallback rewrote the entry without locations, named the rejected path in the content,
+and escalated it to `needs_human`. The finding survived; its evidence was marked unverified. A
+guard that discards the finding along with the bad citation would trade one failure for a worse one.
+
+**A3's first half is mechanism, verified separately.** `remi-gate.js` was tested on a synthetic
+reference, seeded in Postgres and deleted afterwards: it refuses a reference with no open gate row,
+writes `status: approved`, and stores Quan's `direction` verbatim in both `content` and
+`details.direction`. The second half — that direction visibly changing what the executor receives —
+is verifiable only once phase 2 exists, and is listed as step 6's own criterion.
+
+**Two limits found and recorded rather than worked around:**
+
+| Limit | Consequence |
+|---|---|
+| The ledger has no update path, so `resolved_by` on the row being closed cannot be set | Resolution is expressed by the closing row, which carries `details.resolves_entry`. Phase 2 keys off an approval row whose own status is `approved` |
+| The guard proves a cited path exists, not that a claim about its contents is true | Findings `31` and `33` cite line ranges in `plugin/index.ts` that no automated check has confirmed |
+
+#### The file-access split, established by probe
+
+Worth its own heading because every role prompt depends on it, and because assuming it the other
+way round produces a role that reports the project as empty.
+
+| Tool | Reach |
+|---|---|
+| `read` | The agent's own workspace. An absolute project path returns `Path escapes sandbox root (~/.openclaw/workspace; container root /workspace)` |
+| `exec` | The container, where the project is bind-mounted at its true absolute path, `ro` or `rw` per role |
+
+So a role reads project files through `exec` — `cd <root>` first, then repo-relative paths, which
+is also the citation form the ledger accepts. The five roles with binds say this in their lane
+contracts now.
+
+The orchestrator is the interesting case: it has `read` confined to its workspace and, under Code
+Mode, no shell at all. It cannot inspect the project. That is not a gap to close — it is what makes
+the orchestrator a router. When it needs a project fact, it asks a role that holds a bind, and the
+answer arrives as data it can pass on.
+
 ### Step 6 — Phase 2 script
 
-`remi-build.ts`: read approved plan → `Promise.all([executor, test planner])` → bounded test/rework loop → code review → bounded fix loop → final brief.
+`scripts/remi-build.js`: read approved plan → `Promise.all([executor, test planner])` → bounded test/rework loop → code review → bounded fix loop → final brief.
 
 *Criterion:* the full acceptance criterion at the top of this document, including A4 (test planner prompt provably free of plan and code text) and A5 (a deliberately failing test drives a rework pass, loop terminates).
+
+Blocked on two things, both listed in the next-action table: an image with `node` for the two `rw`
+roles, and a test target for the suite to run. The second is itself sitting at the gate.
+
+What phase 1 settles for it, so it does not get re-litigated: the deployment and bootstrap shape
+(D12), stage-row ownership (D13), the `exec` route to project files, the citation fallback, and the
+gate contract — an approval row whose own `status` is `approved`, carrying `details.direction`,
+which is what phase 2 hands the executor alongside the plan.
 
 ---
 
