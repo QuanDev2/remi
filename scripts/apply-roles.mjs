@@ -43,8 +43,40 @@ config.agents.defaults.models = Object.fromEntries(
 config.agents.defaults.modelPolicy = { allow: [...models].sort() };
 
 const applied = [];
+const projectRoot = spec.projectRoot;
 
-function applyAgent({ id, model, thinking, codeMode, profile, contractDir, workspace }) {
+// Sandbox defaults: no network egress, read-only root, all capabilities dropped.
+// The Gateway itself stays on the host; only tool execution moves into a container.
+// This is what stops a role from reading unrelated projects or ~/.ssh: those paths
+// simply are not present inside the container.
+config.agents.defaults.sandbox = {
+  mode: "all",
+  backend: "docker",
+  scope: "agent",
+  workspaceAccess: "rw",
+  docker: {
+    image: "openclaw-sandbox:bookworm-slim",
+    readOnlyRoot: true,
+    tmpfs: ["/tmp", "/var/tmp", "/run"],
+    network: "none",
+    capDrop: ["ALL"],
+    // Required because the project lives outside the agent workspace roots.
+    // Per OpenClaw's docs this lifts only the workspace-root restriction: the
+    // blocked system-path, credential, Docker-socket, symlink-parent and
+    // reserved-target checks all still apply. The only external source we mount
+    // is the one project directory named in roles.json.
+    dangerouslyAllowExternalBindSources: true,
+  },
+};
+
+// Plugin tools execute Gateway-side, so they still reach Postgres from a sandboxed
+// session — but only if the sandbox tool policy admits them as well.
+config.tools.sandbox = {
+  ...(config.tools.sandbox ?? {}),
+  tools: { alsoAllow: ["ledger_write", "ledger_query"] },
+};
+
+function applyAgent({ id, model, thinking, codeMode, profile, contractDir, workspace, projectAccess }) {
   const ws = workspace ?? join(stateDir, `workspace-${id}`);
   const entry = entries[id] ?? {};
 
@@ -55,6 +87,14 @@ function applyAgent({ id, model, thinking, codeMode, profile, contractDir, works
   // `thinking` is deliberately NOT written here: it is not an agent-entry key, and
   // three roles share claude-sonnet-5 at high / medium / low. The pipeline scripts
   // read roles.json and pass `thinking` per call to agents.run().
+
+  // Bind the project at its identical host path, so a relative path means the same
+  // thing inside and outside the container and D10 validation stays coherent.
+  if (projectAccess === "ro" || projectAccess === "rw") {
+    entry.sandbox = { docker: { binds: [`${projectRoot}:${projectRoot}:${projectAccess}`] } };
+  } else {
+    delete entry.sandbox;
+  }
   entries[id] = entry;
 
   const src = join(repo, "roles", contractDir, "AGENTS.md");
@@ -63,7 +103,8 @@ function applyAgent({ id, model, thinking, codeMode, profile, contractDir, works
     mkdirSync(ws, { recursive: true });
     copyFileSync(src, join(ws, "AGENTS.md"));
   }
-  applied.push({ id, model, thinking, codeMode, profile: profile ?? "(inherit)", workspace: ws });
+  applied.push({ id, model, thinking, codeMode, profile: profile ?? "(inherit)",
+                 project: projectAccess ?? "none" });
 }
 
 // Orchestrator keeps the default workspace; it is the session Quan talks to.
@@ -72,6 +113,7 @@ applyAgent({
   model: spec.orchestrator.model,
   thinking: spec.orchestrator.thinking,
   codeMode: spec.orchestrator.codeMode,
+  projectAccess: spec.orchestrator.projectAccess,
   contractDir: "orchestrator",
   workspace: config.agents.defaults?.workspace ?? join(stateDir, "workspace"),
 });

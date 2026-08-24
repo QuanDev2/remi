@@ -7,13 +7,21 @@
     "Only the orchestrator needs codeMode, because it writes the pipeline scripts.",
     "",
     "Reviewers run on DeepSeek on purpose. A reviewer sharing the author's training",
-    "distribution shares its blind spots. Requires DEEPSEEK_API_KEY in the environment."
+    "distribution shares its blind spots. Requires DEEPSEEK_API_KEY in the auth store.",
+    "",
+    "projectAccess controls what the sandbox mounts:",
+    "  none  no project bind at all. The role works from its task text.",
+    "  ro    project mounted read-only. Reviewers and the planner.",
+    "  rw    project mounted writable. Only the roles that must change files.",
+    "The bind uses the identical host path inside the container so that a cited",
+    "relative path means the same thing on both sides, and D10 validation holds."
   ],
   "orchestrator": {
     "id": "main",
     "model": "anthropic/claude-opus-4-8",
     "thinking": "high",
-    "codeMode": true
+    "codeMode": true,
+    "projectAccess": "rw"
   },
   "roles": [
     {
@@ -22,7 +30,8 @@
       "model": "anthropic/claude-sonnet-5",
       "thinking": "high",
       "codeMode": false,
-      "profile": "minimal"
+      "profile": "minimal",
+      "projectAccess": "none"
     },
     {
       "id": "planner",
@@ -30,7 +39,8 @@
       "model": "anthropic/claude-opus-5",
       "thinking": "high",
       "codeMode": false,
-      "profile": "coding"
+      "profile": "coding",
+      "projectAccess": "ro"
     },
     {
       "id": "plan-reviewer",
@@ -38,7 +48,8 @@
       "model": "deepseek/deepseek-v4-pro",
       "thinking": "xhigh",
       "codeMode": false,
-      "profile": "coding"
+      "profile": "coding",
+      "projectAccess": "ro"
     },
     {
       "id": "executor",
@@ -46,7 +57,8 @@
       "model": "anthropic/claude-sonnet-5",
       "thinking": "high",
       "codeMode": false,
-      "profile": "coding"
+      "profile": "coding",
+      "projectAccess": "rw"
     },
     {
       "id": "code-reviewer",
@@ -54,7 +66,8 @@
       "model": "deepseek/deepseek-v4-pro",
       "thinking": "xhigh",
       "codeMode": false,
-      "profile": "coding"
+      "profile": "coding",
+      "projectAccess": "ro"
     },
     {
       "id": "test-planner",
@@ -62,7 +75,8 @@
       "model": "anthropic/claude-sonnet-5",
       "thinking": "medium",
       "codeMode": false,
-      "profile": "minimal"
+      "profile": "minimal",
+      "projectAccess": "none"
     },
     {
       "id": "test-executor",
@@ -70,7 +84,8 @@
       "model": "anthropic/claude-sonnet-5",
       "thinking": "low",
       "codeMode": false,
-      "profile": "coding"
+      "profile": "coding",
+      "projectAccess": "rw"
     },
     {
       "id": "briefer",
@@ -78,7 +93,9 @@
       "model": "anthropic/claude-haiku-4-5",
       "thinking": "off",
       "codeMode": false,
-      "profile": "minimal"
+      "profile": "minimal",
+      "projectAccess": "none"
     }
-  ]
+  ],
+  "projectRoot": "/Users/quandev/projects/apps/remi"
 }

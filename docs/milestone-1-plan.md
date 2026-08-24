@@ -189,6 +189,68 @@ repository — omitting the sibling directory where the files actually were. A c
 an inadequate search, which is the same error being attributed to the model. Verify the search
 space before concluding absence.
 
+### D11 — Roles run in containers, one project bind, no network
+
+D10's guard validated citations. It did not stop a role from *reading* another project, and the
+requirement is that this project has nothing to do with any other. Workspace is `cwd`, not a
+boundary; `exec` is a real shell running as the operator's own user. So before the sandbox, every
+role could read all of `~/projects`, `~/.ssh`, `~/.aws`, and `~/.openclaw` — including the provider
+keys — and could write and push anywhere.
+
+Two cheaper options were rejected on inspection:
+
+| Option | Why not |
+|---|---|
+| Point every role's `workspace` at the project | `AGENTS.md` loads from the workspace root, so nine roles sharing one workspace share one contract. The lane design collapses |
+| Give each role a repo-rooted `cwd` | `sessions_spawn` accepts `cwd`, but `agents.run` — what the pipeline uses — has no such option, and `agents.entries.*.cwd` is rejected as an unrecognised key. Dropping to `sessions_spawn` would cost schema validation and inline await |
+
+Neither is a boundary anyway. Both remove the *motive* to wander while leaving the *capability*.
+
+**Configuration.** `agents.defaults.sandbox`: `mode: "all"`, `backend: "docker"`, `scope: "agent"`,
+and Docker defaults of `network: "none"`, `readOnlyRoot: true`, `capDrop: ["ALL"]`,
+`tmpfs: ["/tmp","/var/tmp","/run"]`. Per-role project access lives in `roles.json` as
+`projectAccess`, and `apply-roles.mjs` turns it into a single bind:
+
+| Access | Roles | Rationale |
+|---|---|---|
+| `rw` | executor, test-executor, orchestrator | the only roles that change files |
+| `ro` | planner, plan-reviewer, code-reviewer | must read the real tree to do their job |
+| `none` | goal-setter, test-planner, briefer | work from task text or ledger rows |
+
+The bind uses the **identical host path inside the container**, so a relative path means the same
+thing on both sides and D10's validation stays coherent.
+
+`dangerouslyAllowExternalBindSources: true` is required because the project sits outside the agent
+workspace roots. Per OpenClaw's docs it lifts only that restriction — the blocked system-path,
+credential, Docker-socket, symlink-parent and reserved-target checks all still apply. One external
+source is mounted: the project named in `roles.json`.
+
+`tools.elevated.enabled: false` is set explicitly. Elevated exec bypasses the sandbox by design;
+it defaults to needing an allowlisted sender, but relying on that is not worth it.
+
+**Setup cost.** The image is not shipped. Build it once:
+`docker build -t openclaw-sandbox:bookworm-slim -` with the Dockerfile from
+`docs/gateway/sandboxing.md`. OpenClaw fails fast rather than substituting `debian:bookworm-slim`,
+because its own image carries `python3` for the write/edit helpers.
+
+**Verified empirically, both the least- and most-privileged role:**
+
+| Check | Result |
+|---|---|
+| `ls .../apps/pholio` | `No such file or directory` |
+| `ls ~/.ssh` | `No such file or directory` |
+| `ls ~/projects/apps` | `remi` — only the bound project |
+| `touch` in the project, as a reviewer | `Read-only file system` |
+| `touch` in the project, as the executor | created, then removed |
+| `whoami` | `cannot find name for user ID 501` — unmapped uid |
+| `pwd` | `/workspace` |
+| `ledger_write` from inside a container | row 9 written with its location |
+
+**The one hole is the intended one.** `ledger_write` works under `network: "none"` because plugin
+tools execute Gateway-side over the tool bridge, not through container networking. Persistence
+leaves the sandbox through an audited, schema-validated, path-checked tool, and nothing else does.
+That requires `tools.sandbox.tools.alsoAllow` to admit the plugin tools as well as global policy.
+
 ---
 
 ## The pipeline
