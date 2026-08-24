@@ -1,0 +1,84 @@
+{
+  "$comment": [
+    "Role definitions for the Remi pipeline. Applied by scripts/apply-roles.mjs.",
+    "",
+    "codeMode is false for every worker: they have small catalogs and cheap models,",
+    "and OpenClaw's own guidance is to keep direct tool exposure in exactly that case.",
+    "Only the orchestrator needs codeMode, because it writes the pipeline scripts.",
+    "",
+    "Reviewers run on DeepSeek on purpose. A reviewer sharing the author's training",
+    "distribution shares its blind spots. Requires DEEPSEEK_API_KEY in the environment."
+  ],
+  "orchestrator": {
+    "id": "main",
+    "model": "anthropic/claude-opus-4-8",
+    "thinking": "high",
+    "codeMode": true
+  },
+  "roles": [
+    {
+      "id": "goal-setter",
+      "n": 1,
+      "model": "anthropic/claude-sonnet-5",
+      "thinking": "high",
+      "codeMode": false,
+      "profile": "minimal"
+    },
+    {
+      "id": "planner",
+      "n": 2,
+      "model": "anthropic/claude-opus-5",
+      "thinking": "high",
+      "codeMode": false,
+      "profile": "coding"
+    },
+    {
+      "id": "plan-reviewer",
+      "n": 3,
+      "model": "deepseek/deepseek-v4-pro",
+      "thinking": "xhigh",
+      "codeMode": false,
+      "profile": "coding"
+    },
+    {
+      "id": "executor",
+      "n": 5,
+      "model": "anthropic/claude-sonnet-5",
+      "thinking": "high",
+      "codeMode": false,
+      "profile": "coding"
+    },
+    {
+      "id": "code-reviewer",
+      "n": 6,
+      "model": "deepseek/deepseek-v4-pro",
+      "thinking": "xhigh",
+      "codeMode": false,
+      "profile": "coding"
+    },
+    {
+      "id": "test-planner",
+      "n": 7,
+      "model": "anthropic/claude-sonnet-5",
+      "thinking": "medium",
+      "codeMode": false,
+      "profile": "minimal"
+    },
+    {
+      "id": "test-executor",
+      "n": 8,
+      "model": "anthropic/claude-sonnet-5",
+      "thinking": "low",
+      "codeMode": false,
+      "profile": "coding"
+    },
+    {
+      "id": "briefer",
+      "n": 9,
+      "model": "anthropic/claude-haiku-4-5",
+      "thinking": "off",
+      "codeMode": false,
+      "profile": "minimal"
+    }
+  ]
+}
