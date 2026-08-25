@@ -91,6 +91,63 @@ if (answers.length >= MAX_TURNS) {
   };
 }
 
+// Milestones live here, with the criteria, rather than in the plan.
+//
+// A milestone is a group of criteria Quan wants to see working together, so it is part of
+// the contract and not implementation sequencing. Two consequences follow. It survives
+// re-planning: throw the plan away and the demo structure still stands. And the ordering is
+// a priority decision — what do I want to see first — which belongs to the person who will
+// be looking at it, not to a planner reasoning about file dependencies.
+//
+// What the planner still owns is assigning steps to these milestones, and saying so when the
+// requested order is not buildable in that order.
+// ---------------------------------------------------------------------------
+// Telemetry and commit anchoring
+//
+// Duplicated from the other pipeline scripts rather than shared, because Code Mode rejects
+// `import` and a cell body has no module system.
+//
+// Interview turns are deliberately absent from the ledger — a row per question would bury
+// the entries that matter — but they belong in telemetry, which is a different question:
+// what does an exchange cost, and how many does a real interview take.
+// ---------------------------------------------------------------------------
+
+const shellHandle = catalog.all().filter(function (t) {
+  return t.callableName === "exec";
+})[0];
+
+async function shell(command) {
+  if (!shellHandle) return null;
+  try {
+    const res = await shellHandle({ command: command });
+    return res && res.aggregated ? String(res.aggregated).trim() : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+const baseCommit =
+  (await shell("git -C " + projectRoot + " rev-parse --short HEAD")) || "unknown";
+
+async function recordRun(role, started, status, error, extra) {
+  try {
+    await agent_run_write({
+      reference: reference,
+      agent: role,
+      model: cfg.models && cfg.models[role] ? cfg.models[role] : undefined,
+      thinking: cfg.thinking[role],
+      stage: "interview",
+      status: status,
+      duration_ms: Date.now() - started,
+      error: error === null ? undefined : error,
+      base_commit: baseCommit,
+      details: extra || {},
+    });
+  } catch (err) {
+    log("Telemetry row failed for " + role + ": " + String(err));
+  }
+}
+
 const CriteriaSchema = {
   type: "object",
   properties: {
@@ -110,10 +167,32 @@ const CriteriaSchema = {
         additionalProperties: false,
       },
     },
+    milestones: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          demonstrates: { type: "string" },
+          criteria: { type: "array", items: { type: "string" } },
+        },
+        required: ["id", "name", "demonstrates", "criteria"],
+        additionalProperties: false,
+      },
+    },
     non_goals: { type: "array", items: { type: "string" } },
     reason: { type: "string" },
   },
-  required: ["status", "question", "goal", "criteria", "non_goals", "reason"],
+  required: [
+    "status",
+    "question",
+    "goal",
+    "criteria",
+    "milestones",
+    "non_goals",
+    "reason",
+  ],
   additionalProperties: false,
 };
 
@@ -141,25 +220,53 @@ const prompt = [
   "",
   "Ask one question, or freeze the criteria if they are already verifiable.",
   "",
+  "Before freezing, group the criteria into milestones. A milestone is a set of criteria",
+  "Quan can watch working together: the pipeline builds one milestone, stops, shows him the",
+  "result, and waits. Two to four criteria each is the usual shape, and one milestone is the",
+  "right answer for a small change.",
+  "",
+  "Three rules for the grouping:",
+  "  Every criterion belongs to exactly one milestone, so nothing is delivered twice and",
+  "  nothing is forgotten.",
+  "  Each milestone delivers something demonstrable on its own. Its demonstrates field says",
+  "  what Quan will be able to see or run when it lands, in his terms rather than in files.",
+  "  The order is his priority, so what he wants working first comes first. Asking him which",
+  "  he wants to see first is a good use of one of your questions.",
+  "",
+  "A criterion too broad to sit in one milestone is a criterion worth splitting, and saying",
+  "so is more useful than spreading it across several.",
+  "",
   "Expected answer, one of three:",
   '  Still interviewing: status "interviewing", question holding your single next',
-  "  question, goal and criteria holding your best current draft so nothing is lost,",
-  '  non_goals as known so far, reason "".',
+  "  question, goal, criteria and milestones holding your best current draft so nothing is",
+  '  lost, non_goals as known so far, reason "".',
   '  Criteria settled: status "ready", question "", goal holding the goal statement,',
   "  criteria holding one entry per criterion with an id, a statement a test can pass or",
-  '  fail on, and a level of unit, integration or e2e. reason "".',
+  "  fail on, and a level of unit, integration or e2e; milestones holding the grouping, in",
+  '  build order. reason "".',
   '  Cannot proceed: status "blocked", question "", reason naming the specific obstacle,',
-  "  goal and criteria holding whatever you have. This is a correct answer, not a failure.",
+  "  goal, criteria and milestones holding whatever you have. This is a correct answer, not",
+  "  a failure.",
   "",
   "Call structured_output once with exactly that.",
 ].join("\n");
 
-const result = await agents.run(prompt, {
-  agentId: "goal-setter",
-  thinking: cfg.thinking["goal-setter"],
-  label: "interview:" + reference + ":" + (answers.length + 1),
-  schema: CriteriaSchema,
-});
+const turnStarted = Date.now();
+let result;
+try {
+  result = await agents.run(prompt, {
+    agentId: "goal-setter",
+    thinking: cfg.thinking["goal-setter"],
+    label: "interview:" + reference + ":" + (answers.length + 1),
+    schema: CriteriaSchema,
+  });
+  await recordRun("goal-setter", turnStarted, "ok", null, { turn: answers.length + 1 });
+} catch (err) {
+  await recordRun("goal-setter", turnStarted, "failed", String(err), {
+    turn: answers.length + 1,
+  });
+  throw err;
+}
 
 if (result.status === "interviewing") {
   // Deliberately unrecorded. A ledger row per question would bury the entries that
@@ -168,7 +275,12 @@ if (result.status === "interviewing") {
     status: "interviewing",
     turn: answers.length + 1,
     question: result.question,
-    draft: { goal: result.goal, criteria: result.criteria, non_goals: result.non_goals },
+    draft: {
+      goal: result.goal,
+      criteria: result.criteria,
+      milestones: result.milestones,
+      non_goals: result.non_goals,
+    },
   };
 }
 
@@ -196,6 +308,58 @@ if (result.criteria.length === 0) {
   };
 }
 
+// The grouping is checked mechanically rather than trusted, because both failure modes are
+// silent and expensive. A criterion in no milestone is work that never gets built, and a
+// criterion in two is a milestone that cannot be signed off on its own.
+const claimed = {};
+const doubled = [];
+for (const m of result.milestones) {
+  for (const id of m.criteria) {
+    if (claimed[id]) doubled.push(id);
+    claimed[id] = true;
+  }
+}
+const orphans = result.criteria
+  .filter(function (c) {
+    return !claimed[c.id];
+  })
+  .map(function (c) {
+    return c.id;
+  });
+const emptyMilestones = result.milestones
+  .filter(function (m) {
+    return m.criteria.length === 0;
+  })
+  .map(function (m) {
+    return m.id;
+  });
+
+if (
+  result.milestones.length === 0 ||
+  orphans.length > 0 ||
+  doubled.length > 0 ||
+  emptyMilestones.length > 0
+) {
+  return {
+    status: "blocked",
+    reason:
+      "The milestone grouping does not cover the criteria cleanly." +
+      (result.milestones.length === 0 ? " No milestones were produced." : "") +
+      (orphans.length > 0 ? " Criteria in no milestone: " + orphans.join(", ") + "." : "") +
+      (doubled.length > 0 ? " Criteria in more than one: " + doubled.join(", ") + "." : "") +
+      (emptyMilestones.length > 0
+        ? " Milestones claiming nothing: " + emptyMilestones.join(", ") + "."
+        : "") +
+      " Every criterion belongs to exactly one milestone, so re-run the interview with that" +
+      " stated.",
+    draft: {
+      goal: result.goal,
+      criteria: result.criteria,
+      milestones: result.milestones,
+    },
+  };
+}
+
 // The freeze. This row is the contract for everything downstream: the planner reads it,
 // the test planner reads it and never sees the plan, and the gate exists to protect it.
 // Amendments come from Quan at the gate in his own words, not from a second interview.
@@ -211,16 +375,25 @@ const row = await ledger_write({
     result.goal +
     " (" +
     result.criteria.length +
-    " criteria, " +
+    " criteria in " +
+    result.milestones.length +
+    " milestone(s), " +
     answers.length +
-    " exchanges)",
+    " exchanges) " +
+    result.milestones
+      .map(function (m) {
+        return m.id + " " + m.name + ": " + m.demonstrates;
+      })
+      .join(" | "),
   details: {
     goal: result.goal,
     criteria: result.criteria,
+    milestones: result.milestones,
     non_goals: result.non_goals,
     request: request,
     answers: answers,
   },
+  base_commit: baseCommit,
 });
 
 return {
@@ -228,6 +401,7 @@ return {
   entry_id: row.id,
   goal: result.goal,
   criteria: result.criteria,
+  milestones: result.milestones,
   non_goals: result.non_goals,
   exchanges: answers.length,
 };
