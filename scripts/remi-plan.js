@@ -76,13 +76,27 @@ function obj(properties) {
 
 const STATUS = enumOf(["ok", "blocked"]);
 
+// Steps carry a milestone id, and milestones are declared separately with the criteria
+// each one satisfies. Phase 2 runs one milestone per invocation and stops, so this is
+// what turns a 40-minute opaque run into something Quan watches in stages and can
+// redirect between.
 const PlanSchema = obj({
   status: STATUS,
   reason: str,
+  milestones: {
+    type: "array",
+    items: obj({
+      id: str,
+      name: str,
+      demonstrates: str,
+      criteria: strs,
+    }),
+  },
   steps: {
     type: "array",
     items: obj({
       id: str,
+      milestone: str,
       action: str,
       files: strs,
       rationale: str,
@@ -194,20 +208,37 @@ ${FILE_ACCESS}
 Read the code that each step would touch before you sequence it. A plan built on
 assumed structure produces executor deviations later.
 
-Produce an ordered list of steps. Each step names the files it touches, the criterion
-ids it serves, and why it exists. A step serving no criterion is scope creep, so
-leave it out. Add a risks list: what could make this plan wrong.
+Produce an ordered list of steps, grouped into milestones. Each step names its
+milestone, the files it touches, the criterion ids it serves, and why it exists. A step
+serving no criterion is scope creep, so leave it out. Add a risks list: what could make
+this plan wrong.
 
 Files that a step creates are legitimate entries in that step's files list even
 though they are absent today. Say so in the action text, so the reviewer can tell a
 planned new file from a mistaken reference.
 
+Milestones are how Quan watches this work happen. Phase 2 runs one milestone, stops,
+shows him the diff and the test run, and waits. Between milestones he can redirect,
+which is worth more to him than a single long run that finishes with everything already
+decided.
+
+So one rule governs the grouping: **a milestone leaves the test suite green and
+demonstrates something Quan can look at.** A slice that ends with a half-wired change
+and a red suite gives him rubble to review. Vertical slices satisfy this — one criterion
+working end to end — where layers usually do not: "add the module, then wire it, then
+test it" leaves the first two unreviewable.
+
+State in each milestone's demonstrates field what he will be able to see when it lands.
+One milestone is the right answer for work that genuinely cannot be split that way, and
+saying so plainly beats inventing a seam that leaves the suite red.
+
 Expected answers, both correct:
-- The criteria can be satisfied as they stand: status "ok", reason "", steps in
-  execution order, risks listed.
+- The criteria can be satisfied as they stand: status "ok", reason "", milestones in
+  the order they should be built, steps in execution order each naming its milestone,
+  risks listed.
 - The criteria need a decision only Quan can make: status "blocked", reason naming
-  that exact decision, steps holding whatever sequencing is already settled, risks
-  listed. Naming the decision is the useful answer.
+  that exact decision, milestones and steps holding whatever sequencing is already
+  settled, risks listed. Naming the decision is the useful answer.
 ${ledgerNote("the planner")}
 ${ONE_CALL}`;
 }
@@ -223,7 +254,11 @@ Acceptance criteria, as JSON:
 ${JSON.stringify(goal.criteria, null, 2)}
 
 The plan under review, as JSON:
-${JSON.stringify({ steps: plan.steps, risks: plan.risks }, null, 2)}
+${JSON.stringify(
+  { milestones: plan.milestones, steps: plan.steps, risks: plan.risks },
+  null,
+  2,
+)}
 ${FILE_ACCESS}
 
 Check specifically:
@@ -232,6 +267,10 @@ Check specifically:
 - Whether the plan assumes structure that the code lacks. Verify against the files.
 - What breaks that the plan leaves out: callers, migrations, existing tests.
 - Whether any step is ordered before something it depends on.
+- Whether each milestone would leave the test suite green on its own. This one is worth
+  real attention: phase 2 stops after each milestone and shows Quan the result, so a
+  milestone that ends half-wired hands him rubble and wastes the stop. A milestone whose
+  steps only add a module nobody calls yet is the common shape of this mistake.
 
 Set severity and needs_human on each finding yourself. You hold the plan, the
 criteria and the code; the briefer holds only your flags and takes them at face
@@ -462,16 +501,23 @@ const planRow = await writeEntry({
   content:
     plan.status === "ok"
       ? plan.steps.length +
-        " steps, " +
+        " steps in " +
+        plan.milestones.length +
+        " milestone(s), " +
         plan.risks.length +
         " risks. " +
-        plan.steps
-          .map(function (s) {
-            return s.id + ": " + s.action;
+        plan.milestones
+          .map(function (m) {
+            return m.id + " " + m.name + ": " + m.demonstrates;
           })
           .join(" | ")
       : "Planning is blocked: " + plan.reason,
-  details: { steps: plan.steps, risks: plan.risks, status: plan.status },
+  details: {
+    milestones: plan.milestones,
+    steps: plan.steps,
+    risks: plan.risks,
+    status: plan.status,
+  },
 });
 
 if (plan.status !== "ok" || plan.steps.length === 0) {
@@ -484,7 +530,12 @@ if (plan.status !== "ok" || plan.steps.length === 0) {
   });
 }
 
-log(plan.steps.length + " steps planned.");
+log(
+  plan.steps.length +
+    " steps planned across " +
+    plan.milestones.length +
+    " milestone(s).",
+);
 phase("3 Adversarial review");
 
 const review = await agents.run(reviewPrompt(goal, plan), {
@@ -564,7 +615,9 @@ const gateRow = await writeEntry({
     reference +
     " is ready for Quan. " +
     plan.steps.length +
-    " steps, " +
+    " steps in " +
+    plan.milestones.length +
+    " milestone(s), " +
     review.items.length +
     " review findings, worst severity " +
     worst +
@@ -572,7 +625,7 @@ const gateRow = await writeEntry({
   details: {
     goal: goal.goal,
     criteria: goal.criteria,
-    plan: { steps: plan.steps, risks: plan.risks },
+    plan: { milestones: plan.milestones, steps: plan.steps, risks: plan.risks },
     findings: review.items,
     finding_entry_ids: findingIds,
     goal_entry_id: goalRow.id,

@@ -54,11 +54,16 @@ if (reference.length === 0) {
   };
 }
 
+// One milestone per invocation. Omitting it runs the first milestone that has no sign-off
+// yet, which is what makes repeated calls walk the plan forward without bookkeeping.
+const requestedMilestone = String(
+  input && input.milestone ? input.milestone : "",
+).trim();
+
 // Bounded, both of them. An agent going round a loop for the third time is a signal, not
 // something to grind through, and `maxTotalPerGroup` is a backstop rather than a design.
 const MAX_TEST_PASSES = 3;
 const MAX_REVIEW_PASSES = 3;
-const MAX_AMENDMENTS = 2;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -145,6 +150,17 @@ const TestResultSchema = obj({
   },
 });
 
+// The reviewer audits the executor's own deviation classifications.
+//
+// The executor grades its own homework here, and the grades are not neutral:
+// "implementation" means nobody interrupts it, "criteria" means it stops and gets
+// scrutinised. The stated backstop was that the test lane catches under-classification,
+// which holds only when a scenario happens to cover the criterion in question.
+//
+// The reviewer already holds the diff and the plan, and it runs on a different model
+// family, so auditing the labels costs no extra call and does not share the executor's
+// blind spots. What it is looking for is the one failure that matters: a change filed as
+// "implementation" that quietly moved observable behaviour.
 const ReviewSchema = obj({
   status: STATUS,
   reason: str,
@@ -159,16 +175,15 @@ const ReviewSchema = obj({
       locations: LOCATIONS,
     }),
   },
-});
-
-const AmendmentSchema = obj({
-  status: STATUS,
-  reason: str,
-  amended_steps: {
+  misclassified: {
     type: "array",
-    items: obj({ id: str, action: str, files: strs, rationale: str, criteria: strs }),
+    items: obj({
+      plan_step: str,
+      claimed_scope: SCOPE,
+      actual_scope: SCOPE,
+      why: str,
+    }),
   },
-  notes: str,
 });
 
 const BriefSchema = obj({
@@ -255,14 +270,31 @@ His direction takes precedence over the plan text where the two differ. Followin
 expected rather than a deviation.`;
 }
 
-function executorPrompt(goal, criteria, steps, direction, attempts) {
+/**
+ * What milestone this invocation is building, and what Quan will look at when it lands.
+ *
+ * A plan predating milestones has none, and the whole plan is then one implicit milestone.
+ * That keeps a plan approved before this existed runnable rather than stranded.
+ */
+function milestoneBlock(milestone) {
+  if (!milestone) {
+    return `This plan has one stage: every step below, in one run.`;
+  }
+  return `Milestone ${milestone.id} — ${milestone.name}.
+When it lands, Quan sees: ${milestone.demonstrates}
+It carries these criteria: ${
+    milestone.criteria.length > 0 ? milestone.criteria.join(", ") : "the plan's criteria"
+  }.`;
+}
+
+function executorPrompt(goal, criteria, steps, direction, attempts, milestone) {
   const history =
     attempts.length === 0
       ? `
-This is the first attempt on this plan.`
+This is the first attempt on this milestone.`
       : `
-Earlier attempts on this plan, oldest first, as JSON. This is a fresh session, so this is
-everything you know about what has already been tried:
+Earlier attempts on this milestone, oldest first, as JSON. This is a fresh session, so this
+is everything you know about what has already been tried:
 ${JSON.stringify(attempts, null, 2)}
 
 Reading these first is worth the time: a failure that survived a previous pass is usually a
@@ -272,15 +304,21 @@ misunderstanding of the code rather than a typo.`;
 
 ${contractBlock(goal, criteria)}
 
-The approved plan, as JSON:
+${milestoneBlock(milestone)}
+
+The steps for this milestone, as JSON. These are the only steps in scope:
 ${JSON.stringify(steps, null, 2)}
 ${directionBlock(direction)}
 ${history}
 ${FILE_ACCESS}
 
-Build what the plan describes. Write the code. Keep the change to what the steps and the
+Build what these steps describe. Write the code. Keep the change to what the steps and the
 criteria require: retries, telemetry, validation and abstraction that no step asked for and
 no criterion needs belong to a later conversation.
+
+Leave the suite green. This milestone stops and gets shown to Quan when it lands, so a
+half-wired change with a red suite gives him rubble to look at. Later milestones handle
+later steps, and reaching for one of them early is how a stopping point stops being one.
 ${DEVIATION_RULES}
 
 Expected answers, all correct:
@@ -297,20 +335,22 @@ ${ledgerNote("the executor")}
 ${ONE_CALL}`;
 }
 
-function fixPrompt(goal, criteria, steps, direction, findings, attempts) {
+function fixPrompt(goal, criteria, steps, direction, findings, attempts, milestone) {
   return `You are role 5, the executor, working on reference ${reference}.
 The tests are green and the code reviewer has raised findings on the diff.
 
 ${contractBlock(goal, criteria)}
 
-The approved plan, as JSON:
+${milestoneBlock(milestone)}
+
+The steps for this milestone, as JSON:
 ${JSON.stringify(steps, null, 2)}
 ${directionBlock(direction)}
 
 The reviewer's findings, as JSON:
 ${JSON.stringify(findings, null, 2)}
 
-Earlier attempts on this plan, oldest first, as JSON:
+Earlier attempts on this milestone, oldest first, as JSON:
 ${JSON.stringify(attempts, null, 2)}
 ${FILE_ACCESS}
 
@@ -364,20 +404,32 @@ ${ledgerNote("the test planner")}
 ${ONE_CALL}`;
 }
 
-function testPrompt(scenarios, attempts, changedFiles) {
+function testPrompt(scenarios, attempts, changedFiles, milestone, deferred) {
   const history =
     attempts.length === 0
       ? `
-This is the first test run for this plan.`
+This is the first test run for this milestone.`
       : `
 Earlier passes, oldest first, as JSON. This is a fresh session, so this is everything you
 know about what has been tried:
 ${JSON.stringify(attempts, null, 2)}`;
 
+  const later =
+    deferred.length === 0
+      ? ``
+      : `
+Scenarios belonging to later milestones, as JSON. They are listed so you can recognise them
+rather than verify them: work that satisfies these is not in yet, and reporting them as
+failures here would bury the results that matter.
+${JSON.stringify(deferred, null, 2)}`;
+
   return `You are role 8, the test executor, working on reference ${reference}.
 
-The scenarios to verify, as JSON:
+${milestoneBlock(milestone)}
+
+The scenarios to verify now, as JSON:
 ${JSON.stringify(scenarios, null, 2)}
+${later}
 
 Files the executor reports changing:
 ${JSON.stringify(changedFiles, null, 2)}
@@ -393,6 +445,10 @@ framework that needs installing is out of reach. Zero-dependency assertions from
 Run the suite with \`cd ${ROOT} && npm test\` and report what actually happened. Where a test
 fails, give the scenario id, what was expected, what happened, and the location with
 role "failure-site".
+
+Run the whole suite, not only the tests you added. A milestone is a stopping point Quan
+looks at, so an existing test this work broke matters as much as a new one that fails, and
+it belongs in results with its scenario id set to "regression".
 
 Deciding what correct behaviour is belongs to the scenarios, and fixing the code belongs to
 the executor. A failing test is your output. Reporting a real failure plainly protects the
@@ -411,17 +467,20 @@ ${ledgerNote("the test executor")}
 ${ONE_CALL}`;
 }
 
-function reviewPrompt(goal, criteria, steps, changedFiles, priorFindings) {
+function reviewPrompt(goal, criteria, steps, changedFiles, deviations, priorFindings) {
   return `You are role 6, the code reviewer, working on reference ${reference}.
 The tests are green, so behaviour against the criteria is already established.
 
 ${contractBlock(goal, criteria)}
 
-The approved plan, as JSON:
+The approved plan for this milestone, as JSON:
 ${JSON.stringify(steps, null, 2)}
 
 Files the executor reports changing:
 ${JSON.stringify(changedFiles, null, 2)}
+
+Deviations the executor reported, with the scope it assigned each one, as JSON:
+${JSON.stringify(deviations, null, 2)}
 
 Findings already on the record for this run, as JSON. A concern raised in an earlier round
 and still unaddressed is more serious than a first-time finding, and saying so is useful:
@@ -435,82 +494,35 @@ maintainability, missed callsites, error paths no criterion covers.
 Behavioural correctness against the criteria belongs to the test executor, which ran before
 you, so a passing test is settled. Rewriting the code belongs to the executor: you report.
 
+**Audit the deviation scopes.** The executor classified its own deviations, and the labels
+carry consequences: "implementation" continues silently, "plan" is recorded as a plan that
+drifted, "criteria" stops the run and reaches Quan. You hold the diff and the plan, so you
+are the one reader positioned to check those labels against what the code actually does.
+
+The label worth your attention is "implementation" on a change that moved observable
+behaviour — an input now accepted that was refused before, a different status code, a
+changed default. That is criteria-scoped whatever it was called, and catching it here is the
+difference between Quan learning about it now and discovering it in use. A scope you agree
+with needs no entry.
+
 Set severity and needs_human yourself. Style preference is info. Something that corrupts
 data, leaks a credential, or breaks a caller is a blocker, and Quan sees it.
 
 Expected answers, all correct:
-- The code is sound: status "ok", reason "", approved true, items empty. Saying so plainly is
-  worth more than a manufactured concern.
+- The code is sound and the scopes are right: status "ok", reason "", approved true, items
+  empty, misclassified empty. Saying so plainly is worth more than a manufactured concern.
 - Concerns found: status "ok", reason "", approved false, items holding one entry each with
   locations. Set lines to a multirange literal such as "{[12,31)}" when pointing at specific
   lines, or "" for a whole-file reference.
+- A scope is wrong: misclassified holding one entry per label you disagree with, naming the
+  step, what it was called, what it actually is, and why. This is compatible with approved
+  true: the code can be good and the label still wrong.
 - The diff is unreadable from here: status "blocked", reason naming what blocked you, items
   holding anything you did establish, approved false.
 ${ledgerNote("the code reviewer")}
 ${ONE_CALL}`;
 }
 
-function amendPrompt(goal, criteria, steps, deviations) {
-  return `You are role 2, the planner, working on reference ${reference}.
-The executor found that reality differs from your plan, in ways that leave every criterion
-intact. Amend the affected steps.
-
-${contractBlock(goal, criteria)}
-
-The plan as approved, as JSON:
-${JSON.stringify(steps, null, 2)}
-
-The plan-scoped deviations the executor reported, as JSON:
-${JSON.stringify(deviations, null, 2)}
-${FILE_ACCESS}
-
-Amend only the steps these deviations touch, and return those steps in full. Steps nobody
-raised stay as they are, so leaving them out of amended_steps is how you keep them.
-
-The criteria hold: this is a correction to sequencing and file targets, not a renegotiation of
-what done means. A deviation that turns out to threaten a criterion belongs back with Quan,
-and saying so in reason is the right answer.
-
-Expected answers, both correct:
-- Steps amended: status "ok", reason "", amended_steps holding each affected step in full,
-  notes explaining what changed and why in one or two sentences.
-- The deviations cannot be absorbed without changing a criterion: status "blocked", reason
-  naming the criterion at risk, amended_steps empty, notes holding your reading of it.
-${ledgerNote("the planner")}
-${ONE_CALL}`;
-}
-
-function deltaReviewPrompt(goal, criteria, amendedSteps, notes) {
-  return `You are role 3, the plan reviewer, working on reference ${reference}.
-The planner has amended part of an already-approved plan after the executor met reality.
-
-${contractBlock(goal, criteria)}
-
-The amended steps, as JSON. These are the only steps in question:
-${JSON.stringify(amendedSteps, null, 2)}
-
-The planner's note on the amendment:
-${notes}
-${FILE_ACCESS}
-
-Review the delta. The rest of the plan is settled and Quan already approved it, so reviewing
-these steps alone is the whole task.
-
-Two questions carry the weight. Do the amended steps still serve the criteria they claim? And
-does the amendment quietly move what done means, which would belong back with Quan rather
-than here?
-
-Set severity and needs_human yourself. Use needs_human when the amendment changes the
-substance of what Quan approved.
-
-Expected answers, all correct:
-- The amendment is sound: status "ok", reason "the amendment is sound", items empty.
-- Concerns found: status "ok", reason "", items holding one entry each, with locations where
-  a real file is involved.
-- The amendment is unreadable from here: status "blocked", reason naming what blocked you.
-${ledgerNote("the plan reviewer")}
-${ONE_CALL}`;
-}
 
 function briefPrompt(rows, outcome) {
   return `You are role 9, the briefer. Phase 2 has finished and Quan needs to know how it
@@ -547,6 +559,10 @@ ${ONE_CALL}`;
 // ---------------------------------------------------------------------------
 
 const SEVERITY_ORDER = { info: 0, warning: 1, blocker: 2 };
+
+// Deviation scopes, ordered by how much they interrupt. Used to tell an understated label
+// from an overstated one when the reviewer disputes the executor's classification.
+const SEVERITY_ORDER_SCOPE = { implementation: 0, plan: 1, criteria: 2 };
 
 function maxSeverity(a, b) {
   return SEVERITY_ORDER[a] >= SEVERITY_ORDER[b] ? a : b;
@@ -816,6 +832,65 @@ async function recordFindings(agent, items) {
   return { ids: ids, worst: worst };
 }
 
+/**
+ * Every deviation reported so far this run, for the reviewer to audit.
+ *
+ * Read back from the ledger rather than accumulated in a variable, so the reviewer audits
+ * what was actually recorded. A deviation that failed to persist is not one the reviewer
+ * should be grading, and the difference would otherwise be invisible.
+ */
+async function allDeviations() {
+  const res = await ledger_query({ reference: reference, type: "deviation", limit: 60 });
+  return (res.entries || [])
+    .map(function (row) {
+      return Object.assign({ entry_id: Number(row.id) }, row.details || {});
+    })
+    .reverse();
+}
+
+/**
+ * Record the reviewer's disagreements with the executor's own scope labels.
+ *
+ * A claimed `implementation` that is really `criteria` is the case worth catching: it means
+ * observable behaviour moved while the run continued silently, so it reaches Quan. A
+ * disagreement in the other direction is over-caution and only worth a note.
+ */
+async function recordMisclassifications(entries) {
+  const ids = [];
+  for (const m of entries || []) {
+    const understated =
+      SEVERITY_ORDER_SCOPE[m.actual_scope] > SEVERITY_ORDER_SCOPE[m.claimed_scope];
+    const row = await writeEntry({
+      agent: "code-reviewer",
+      type: "finding",
+      reference: reference,
+      status: "open",
+      severity: understated
+        ? m.actual_scope === "criteria"
+          ? "blocker"
+          : "warning"
+        : "info",
+      needs_human: understated && m.actual_scope === "criteria",
+      content:
+        "Deviation scope audit on step " +
+        (m.plan_step || "unattributed") +
+        ": the executor called it " +
+        m.claimed_scope +
+        " and the reviewer reads it as " +
+        m.actual_scope +
+        ". " +
+        m.why,
+      details: m,
+    });
+    count("finding");
+    ids.push(row.id);
+  }
+  if ((entries || []).length > 0) {
+    log((entries || []).length + " deviation scope(s) disputed by the reviewer.");
+  }
+  return ids;
+}
+
 // ---------------------------------------------------------------------------
 // The gate check
 //
@@ -939,10 +1014,126 @@ const directionRecorded =
     : null;
 
 // ---------------------------------------------------------------------------
+// Milestone selection
+//
+// One milestone per invocation, then stop and brief. Quan asked for the work in stages he
+// can look at and redirect between, and short runs make an in-flight interrupt unnecessary:
+// the stopping point is the plan's own seam rather than a checkpoint bolted into a loop.
+//
+// A plan approved before milestones existed carries none, and the whole plan is then one
+// implicit stage. Keeping that path alive matters — there is a real approved plan in the
+// ledger from before this change.
+// ---------------------------------------------------------------------------
+
+const allMilestones =
+  (gateRequest.details.plan && gateRequest.details.plan.milestones) || [];
+
+// Sign-offs already on the record tell us which milestones are behind us, so a repeated call
+// walks the plan forward with no bookkeeping passed in.
+const signOffs = await ledger_query({
+  reference: reference,
+  type: "decision",
+  limit: 60,
+});
+const done = {};
+for (const row of signOffs.entries || []) {
+  if (row.details && row.details.sign_off && row.details.milestone) {
+    done[row.details.milestone] = true;
+  }
+}
+
+let milestone = null;
+if (allMilestones.length > 0) {
+  if (requestedMilestone.length > 0) {
+    milestone = allMilestones.filter(function (m) {
+      return m.id === requestedMilestone;
+    })[0];
+    if (!milestone) {
+      return {
+        status: "blocked",
+        reference: reference,
+        reason:
+          "Milestone " +
+          requestedMilestone +
+          " is not in this plan. It holds: " +
+          allMilestones
+            .map(function (m) {
+              return m.id;
+            })
+            .join(", ") +
+          ".",
+      };
+    }
+  } else {
+    milestone = allMilestones.filter(function (m) {
+      return !done[m.id];
+    })[0];
+    if (!milestone) {
+      return {
+        status: "ok",
+        reference: reference,
+        reason:
+          "Every milestone on this plan has a sign-off: " +
+          Object.keys(done).join(", ") +
+          ". There is nothing left to build.",
+        milestones_complete: Object.keys(done),
+      };
+    }
+  }
+}
+
+// Steps for this milestone only. A plan without milestones runs whole, which is what the
+// pre-milestone approved plan needs.
+const milestoneSteps = milestone
+  ? steps.filter(function (s) {
+      return s.milestone === milestone.id;
+    })
+  : steps;
+
+if (milestoneSteps.length === 0) {
+  return {
+    status: "blocked",
+    reference: reference,
+    reason:
+      "Milestone " +
+      milestone.id +
+      " has no steps assigned to it. The plan's steps name milestones " +
+      JSON.stringify(
+        steps.map(function (s) {
+          return s.milestone;
+        }),
+      ) +
+      ".",
+  };
+}
+
+const remaining = allMilestones.filter(function (m) {
+  return !done[m.id] && (!milestone || m.id !== milestone.id);
+});
+
+log(
+  milestone
+    ? "Milestone " +
+        milestone.id +
+        " (" +
+        milestone.name +
+        "): " +
+        milestoneSteps.length +
+        " steps, " +
+        remaining.length +
+        " milestone(s) after it."
+    : "No milestones on this plan; running all " + steps.length + " steps as one stage.",
+);
+
+// ---------------------------------------------------------------------------
 // Stage 1: build and plan the tests, in parallel
 // ---------------------------------------------------------------------------
 
-phase("1 Build and test planning");
+phase(
+  milestone
+    ? "1 Build " + milestone.id + " and plan the tests"
+    : "1 Build and test planning",
+);
 log("Executor and test planner running in parallel.");
 
 const attempts = [];
@@ -951,12 +1142,15 @@ let scenarioResult;
 
 try {
   const both = await Promise.all([
-    agents.run(executorPrompt(goal, criteria, steps, direction, attempts), {
-      agentId: "executor",
-      thinking: thinkingFor("executor"),
-      label: "build:" + reference,
-      schema: CodeChangeSchema,
-    }),
+    agents.run(
+      executorPrompt(goal, criteria, milestoneSteps, direction, attempts, milestone),
+      {
+        agentId: "executor",
+        thinking: thinkingFor("executor"),
+        label: "build:" + reference,
+        schema: CodeChangeSchema,
+      },
+    ),
     agents.run(scenarioPrompt(goal, criteria), {
       agentId: "test-planner",
       thinking: thinkingFor("test-planner"),
@@ -1038,13 +1232,57 @@ if (scenarioResult.scenarios.length === 0) {
   });
 }
 
+// The test planner works from the whole criteria set, because it never sees the plan and so
+// has no idea milestones exist — which is the point of its isolation (A4). Splitting its
+// output by the milestone's criteria is the script's job, not its.
+const milestoneCriteria = {};
+if (milestone) {
+  for (const id of milestone.criteria) milestoneCriteria[id] = true;
+}
+const currentScenarios = milestone
+  ? scenarioResult.scenarios.filter(function (s) {
+      return milestoneCriteria[s.criterion_id];
+    })
+  : scenarioResult.scenarios;
+const deferredScenarios = milestone
+  ? scenarioResult.scenarios.filter(function (s) {
+      return !milestoneCriteria[s.criterion_id];
+    })
+  : [];
+
+// A milestone that claims criteria the planner wrote no scenario for cannot be verified, and
+// running it anyway would produce a green result that means nothing.
+if (currentScenarios.length === 0) {
+  return await briefAndReturn({
+    status: "blocked",
+    stopped_at: "scenario-coverage",
+    reason:
+      "Milestone " +
+      milestone.id +
+      " claims criteria " +
+      milestone.criteria.join(", ") +
+      ", and none of the " +
+      scenarioResult.scenarios.length +
+      " scenarios cover them. Verifying this milestone is not possible as planned.",
+    code_change_entry_id: changeRow.id,
+    scenario_entry_id: scenarioRow.id,
+  });
+}
+
+log(
+  currentScenarios.length +
+    " scenarios in scope for this milestone, " +
+    deferredScenarios.length +
+    " deferred.",
+);
+
 // ---------------------------------------------------------------------------
 // Stage 2: the test and rework loop
 // ---------------------------------------------------------------------------
 
 let attempt = executorResult;
 let testResult = null;
-let amendments = 0;
+let planDrift = 0;
 let pass = 0;
 
 while (pass < MAX_TEST_PASSES) {
@@ -1071,112 +1309,36 @@ while (pass < MAX_TEST_PASSES) {
     });
   }
 
-  // Plan-scoped deviations earn an amendment: the planner corrects the affected steps and the
-  // plan reviewer looks only at the delta. Quan is not interrupted, because the criteria he
-  // approved still hold — that is exactly what the scope classification is for.
+  // Plan-scoped deviations are recorded and the run continues. There was an amendment loop
+  // here — planner rewrites the affected steps, plan reviewer reviews the rewrite — and it
+  // was deleted on purpose. The code is already written by the time a deviation is reported,
+  // so the planner was documenting a fait accompli and the reviewer was reviewing something
+  // it could not prevent: two agent calls that changed nothing and left a plan row reading
+  // as though the drift had been the plan all along.
+  //
+  // The plan stays as Quan approved it, visibly stale, and the deviation rows carry what
+  // actually happened. The reviewer audits the scope labels later, which is the check that
+  // does have teeth.
   const planDeviations = attempt.deviations.filter(function (d) {
     return d.scope === "plan";
   });
-  if (planDeviations.length > 0 && amendments < MAX_AMENDMENTS) {
-    amendments += 1;
-    phase("Amend plan " + amendments);
-    log(planDeviations.length + " plan-scoped deviations; amending.");
-
-    const amendment = await agents.run(
-      amendPrompt(goal, criteria, steps, planDeviations),
-      {
-        agentId: "planner",
-        thinking: thinkingFor("planner"),
-        label: "amend:" + reference,
-        schema: AmendmentSchema,
-      },
+  planDrift += planDeviations.length;
+  if (planDeviations.length > 0) {
+    log(
+      planDeviations.length +
+        " plan-scoped deviation(s) recorded; the plan stands as approved and the run continues.",
     );
-
-    if (amendment.status === "ok" && amendment.amended_steps.length > 0) {
-      // Amended steps replace their originals by id; anything untouched stays as approved.
-      const byId = {};
-      for (const s of steps) byId[s.id] = s;
-      for (const s of amendment.amended_steps) byId[s.id] = s;
-      steps = Object.keys(byId).map(function (k) {
-        return byId[k];
-      });
-
-      await writeEntry({
-        agent: "planner",
-        type: "plan",
-        reference: reference,
-        status: "resolved",
-        severity: "warning",
-        needs_human: false,
-        content:
-          "Amendment " +
-          amendments +
-          ": " +
-          amendment.amended_steps.length +
-          " steps amended after plan-scoped deviations. " +
-          amendment.notes,
-        details: {
-          amended_steps: amendment.amended_steps,
-          notes: amendment.notes,
-          deviations: planDeviations,
-        },
-      });
-      count("plan");
-
-      const deltaReview = await agents.run(
-        deltaReviewPrompt(goal, criteria, amendment.amended_steps, amendment.notes),
-        {
-          agentId: "plan-reviewer",
-          thinking: thinkingFor("plan-reviewer"),
-          label: "delta:" + reference,
-          schema: ReviewSchema,
-        },
-      );
-      const delta = await recordFindings("plan-reviewer", deltaReview.items);
-
-      // A blocker on the delta means the amendment changed the substance of what Quan
-      // approved. That belongs back with him rather than being reviewed away here.
-      if (delta.worst === "blocker") {
-        log("Stopping: the delta review found a blocker in the amendment.");
-        return await briefAndReturn({
-          status: "blocked",
-          stopped_at: "amendment",
-          reason:
-            "The amended plan drew a blocking finding, so what Quan approved has moved.",
-          passes: pass - 1,
-          amendments: amendments,
-          finding_entry_ids: delta.ids,
-        });
-      }
-    } else {
-      await writeEntry({
-        agent: "planner",
-        type: "finding",
-        reference: reference,
-        status: "open",
-        severity: "blocker",
-        needs_human: true,
-        content:
-          "The planner declined to amend: " +
-          (amendment.reason || "no reason given") +
-          " " +
-          (amendment.notes || ""),
-        details: { deviations: planDeviations, amendment: amendment },
-      });
-      count("finding");
-      return await briefAndReturn({
-        status: "blocked",
-        stopped_at: "amendment",
-        reason: amendment.reason || "The planner declined to amend the plan.",
-        passes: pass - 1,
-        amendments: amendments,
-      });
-    }
   }
 
   phase("2 Tests, pass " + pass);
   testResult = await agents.run(
-    testPrompt(scenarioResult.scenarios, attempts, attempt.files_changed),
+    testPrompt(
+      currentScenarios,
+      attempts,
+      attempt.files_changed,
+      milestone,
+      deferredScenarios,
+    ),
     {
       agentId: "test-executor",
       thinking: thinkingFor("test-executor"),
@@ -1222,7 +1384,7 @@ while (pass < MAX_TEST_PASSES) {
   phase("2 Rework, pass " + pass);
   log(failures.length + " failing; reworking.");
   attempt = await agents.run(
-    executorPrompt(goal, criteria, steps, direction, attempts),
+    executorPrompt(goal, criteria, milestoneSteps, direction, attempts, milestone),
     {
       agentId: "executor",
       thinking: thinkingFor("executor"),
@@ -1258,7 +1420,7 @@ if (!testResult || !testResult.all_passed) {
     stopped_at: "rework-cap",
     reason: "Tests still failing after " + MAX_TEST_PASSES + " passes.",
     passes: MAX_TEST_PASSES,
-    amendments: amendments,
+    plan_drift: planDrift,
   });
 }
 
@@ -1275,7 +1437,14 @@ while (reviewPass < MAX_REVIEW_PASSES) {
   phase("3 Code review, pass " + reviewPass);
 
   review = await agents.run(
-    reviewPrompt(goal, criteria, steps, changedFiles, await priorFindings()),
+    reviewPrompt(
+      goal,
+      criteria,
+      milestoneSteps,
+      changedFiles,
+      allDeviations(),
+      await priorFindings(),
+    ),
     {
       agentId: "code-reviewer",
       thinking: thinkingFor("code-reviewer"),
@@ -1285,6 +1454,7 @@ while (reviewPass < MAX_REVIEW_PASSES) {
   );
 
   const recorded = await recordFindings("code-reviewer", review.items);
+  await recordMisclassifications(review.misclassified);
   log(
     "Review pass " +
       reviewPass +
@@ -1299,7 +1469,7 @@ while (reviewPass < MAX_REVIEW_PASSES) {
 
   phase("3 Fix, pass " + reviewPass);
   const fix = await agents.run(
-    fixPrompt(goal, criteria, steps, direction, review.items, attempts),
+    fixPrompt(goal, criteria, milestoneSteps, direction, review.items, attempts, milestone),
     {
       agentId: "executor",
       thinking: thinkingFor("executor"),
@@ -1324,7 +1494,7 @@ while (reviewPass < MAX_REVIEW_PASSES) {
   // signal has to hold: this is the cheap leg paid twice so the expensive one is not.
   phase("3 Tests after fix " + reviewPass);
   testResult = await agents.run(
-    testPrompt(scenarioResult.scenarios, attempts, changedFiles),
+    testPrompt(currentScenarios, attempts, changedFiles, milestone, deferredScenarios),
     {
       agentId: "test-executor",
       thinking: thinkingFor("test-executor"),
@@ -1364,14 +1534,18 @@ while (reviewPass < MAX_REVIEW_PASSES) {
 }
 
 // ---------------------------------------------------------------------------
-// Sign-off
+// Sign-off, and the stop
 // ---------------------------------------------------------------------------
 
 const approved = Boolean(review && review.approved);
+const label = milestone ? "Milestone " + milestone.id + " (" + milestone.name + ")" : "Plan";
 
 // A `decision` row rather than an `approval` row, deliberately. `approval` means the human
 // gate here, and the gate check above looks for exactly that; a sign-off wearing the same
 // type would make a second run mistake the reviewer for Quan.
+//
+// `details.milestone` is what the next invocation reads to know this stage is behind it, so
+// calling the script again with no milestone walks the plan forward on its own.
 const signOff = await writeEntry({
   agent: "code-reviewer",
   type: "decision",
@@ -1380,41 +1554,64 @@ const signOff = await writeEntry({
   severity: approved ? "info" : "warning",
   needs_human: !approved,
   content: approved
-    ? "Phase 2 complete on " +
+    ? label +
+      " complete on " +
       reference +
       ": tests green after " +
       pass +
       " pass(es), code review approved on review pass " +
       reviewPass +
-      ". The working tree is uncommitted."
-    : "Phase 2 finished on " +
+      ". " +
+      (remaining.length > 0
+        ? remaining.length + " milestone(s) remain. "
+        : "This was the last milestone. ") +
+      "The working tree is uncommitted."
+    : label +
+      " finished on " +
       reference +
       " with tests green and review unresolved after " +
       reviewPass +
       " passes. The findings stand and the working tree is uncommitted.",
   details: {
     sign_off: approved,
+    milestone: milestone ? milestone.id : "whole-plan",
+    milestone_name: milestone ? milestone.name : "",
+    demonstrates: milestone ? milestone.demonstrates : "",
     test_passes: pass,
     review_passes: reviewPass,
-    amendments: amendments,
+    plan_drift: planDrift,
     files_changed: changedFiles,
     direction_entry_id: directionRecorded,
+    remaining_milestones: remaining.map(function (m) {
+      return m.id;
+    }),
   },
 });
 
 log("Sign-off row " + signOff.id + " written.");
 
+// The stop is the feature. Quan sees a diff and a test run he can actually hold in his head,
+// and the next milestone waits for him rather than arriving alongside three others. Between
+// stops he can redirect, which is worth more than finishing sooner.
 return await briefAndReturn({
   status: approved ? "ok" : "review-unresolved",
-  stopped_at: "done",
+  stopped_at: "milestone",
   approved: approved,
+  milestone: milestone ? milestone.id : "whole-plan",
+  demonstrates: milestone ? milestone.demonstrates : "",
+  remaining_milestones: remaining.map(function (m) {
+    return { id: m.id, name: m.name, demonstrates: m.demonstrates };
+  }),
   passes: pass,
   review_passes: reviewPass,
-  amendments: amendments,
+  plan_drift: planDrift,
   files_changed: changedFiles,
   sign_off_entry_id: signOff.id,
   gate_entry_id: Number(decision.id),
   next_step:
-    "The working tree holds the change, uncommitted. Read it, then commit it yourself or ask " +
-    "for a diff walkthrough.",
+    remaining.length > 0
+      ? "Read the diff, then continue with the next milestone by running remi-build.js again " +
+        "on this reference. Redirecting instead is a fresh interview on the criteria."
+      : "Every milestone is signed off. The working tree holds the change, uncommitted: read " +
+        "it, then commit it yourself or ask for a diff walkthrough.",
 });

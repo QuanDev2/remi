@@ -371,6 +371,73 @@ That reservation is not a courtesy. The plan reviewer discovered that its own co
 `node` on `PATH` — corroborating the step-6 blocker from a second, independent direction — and no
 field of `FindingsSchema` is the place to put that.
 
+### D14 — Plan deviations are recorded, not amended
+
+**This reverses what the merge handoff §5 specified**, after arguing it through. The handoff's
+design: a `plan`-scoped deviation sends the affected steps back to the planner, which rewrites them,
+and the plan reviewer reviews the rewrite. It was built that way, run against nothing, and then
+deleted.
+
+The reason it does not work is the ordering. A deviation is *reported after the code is written* —
+the executor cannot know the plan is wrong until it reads the code, and it reads the code while
+working. So the planner was documenting a fait accompli, and the reviewer was reviewing a
+description of something that already existed, with no power to prevent it. Two agent calls, three
+minutes, and no outcome that differed from doing nothing.
+
+It was also actively harmful to the record: the amended plan row read as though the drift had been
+the plan all along, which loses the one interesting fact — that reality differed from what was
+approved.
+
+So the plan row now stays exactly as Quan approved it, visibly stale, and the `deviation` rows carry
+what actually happened. The ledger is the record; the plan is a hypothesis that was tested.
+
+Rejected alternative worth naming: a recon pass before planning commits, so the plan is right the
+first time. The planner already reads the code — that is what its `ro` bind is for — so the
+deviations that survive it are precisely the ones a second pass would also miss.
+
+### D15 — The reviewer audits the executor's deviation scopes
+
+The executor classifies its own deviations, and the classes are not neutral: `implementation`
+continues silently, `criteria` stops the run and gets scrutinised. It is a self-report by an
+interested party, and the stated backstop — "the test lane catches under-classification" — holds
+only when a scenario happens to cover the criterion in question.
+
+The code reviewer already receives the diff and the plan, and it runs on a different model family.
+So it now also receives the deviation list and returns `misclassified`: which labels it disputes,
+what it reads them as, and why. Zero extra agent calls, and no shared blind spot with the author.
+
+The case worth catching is `implementation` on a change that moved observable behaviour — an input
+now accepted that used to be refused, a changed default. That is criteria-scoped whatever it was
+called, and it is the difference between Quan hearing about it now and finding out in use. An
+understated label becomes a `blocker` with `needs_human`; an overstated one is a note.
+
+### D16 — Milestones are the unit of execution, and the stop is the feature
+
+Quan asked to see the work in stages rather than waiting on one long opaque run, and to be able to
+redirect between them. That reframes an awkward problem into an easy one: **if runs are short, an
+in-flight interrupt is unnecessary.** Interrupt granularity becomes work decomposition.
+
+So the planner groups steps into milestones, and `remi-build.js` builds exactly one per invocation
+— tests it, reviews it, briefs, and stops. Calling it again walks the plan forward, since the
+sign-off rows record which stages are done. One gate still covers the whole plan; per-milestone
+gates would be the bureaucracy this was meant to avoid.
+
+One rule makes it work, and it constrains the planner: **a milestone leaves the suite green and
+demonstrates something Quan can look at.** A slice that ends half-wired hands him rubble and wastes
+the stop. That favours vertical slices — one criterion working end to end — over layers, where "add
+the module, then wire it, then test it" leaves the first two unreviewable. The plan reviewer checks
+this explicitly.
+
+Costs, stated rather than discovered later: more of Quan's attention per feature, one brief per
+milestone; a new thing the planner can be bad at; and for this repository "something to look at"
+means a diff and a test run, since the sandbox has no network to serve a UI from.
+
+Scenario splitting is the script's job, not the test planner's. The test planner never learns that
+milestones exist — it works from criteria alone (A4) — so the script selects the scenarios whose
+criteria this milestone claims, lists the rest as deferred so they are recognised rather than
+reported as failures, and refuses to run a milestone whose criteria no scenario covers, because a
+green result there would mean nothing.
+
 ---
 
 ## The pipeline
@@ -772,14 +839,18 @@ reference that does not exist, once on the parked plan whose gate row is `open` 
 `approved`. Both refused, with the same actionable reason. The undecided case is the one that
 matters: a plan that reached the gate but was never answered cannot slip into execution.
 
-**Bounds, and why they are not configuration.** Three test passes, three review passes, two
-amendments. An agent that cannot go green in three passes is reporting something, and raising the
-cap converts that signal into a longer wait.
+**Bounds, and why they are not configuration.** Three test passes, three review passes. An agent
+that cannot go green in three passes is reporting something, and raising the cap converts that
+signal into a longer wait.
 
-**What the loops do with a deviation** follows the executor's own classification. `implementation`
-is recorded and nobody is interrupted. `plan` sends the affected steps back to the planner and the
-delta — only the delta — to the plan reviewer, then continues. `criteria` stops the run, because the
-executor is saying the contract is wrong and further passes would be work against a broken contract.
+**One milestone per invocation** (D16). The script builds one stage of the plan, tests it, reviews
+it, briefs Quan and stops. Calling it again walks the plan forward, because the sign-off rows say
+which stages are behind it.
+
+**What the loops do with a deviation** follows the executor's own classification, and the
+`plan` route changed after discussion — see D14. `implementation` and `plan` are both recorded and
+the run continues; `criteria` stops it, because the executor is saying the contract is wrong and
+further passes would be work against a broken contract. The reviewer then audits the labels (D15).
 
 **A4 is checkable by reading one function.** `scenarioPrompt` receives the goal and the criteria.
 It is the only prompt in the script that takes no plan, no step list, no file list, and no diff —
