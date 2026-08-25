@@ -8,7 +8,8 @@
   "contracts": {
     "tools": [
       "ledger_write",
-      "ledger_query"
+      "ledger_query",
+      "agent_run_write"
     ]
   },
   "configSchema": {
