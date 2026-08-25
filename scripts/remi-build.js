@@ -66,6 +66,87 @@ const MAX_TEST_PASSES = 3;
 const MAX_REVIEW_PASSES = 3;
 
 // ---------------------------------------------------------------------------
+// Telemetry and commit anchoring
+//
+// `ledger` records what an agent produced. It records nothing about the execution, which
+// left the plan's own commitments unanswerable: "revisit the model choice on data rather
+// than instinct" needs a mean pass count, and "re-measure whether xhigh is honoured" needs
+// per-role latency. Phase 1's first run was timed with a stopwatch on the CLI.
+//
+// So every child goes through runRole(), which times it, records it, and re-throws on
+// failure. A failed run is the more valuable row: it is the one nobody remembers accurately.
+//
+// The base commit anchors every claim to the tree it was read from. Line ranges written
+// against an unrecorded commit are precise until the next edit and misleading afterwards.
+// ---------------------------------------------------------------------------
+
+/** The shell, resolved from the catalog: `exec` is not a plain guest global here. */
+const shellHandle = catalog.all().filter(function (t) {
+  return t.callableName === "exec";
+})[0];
+
+async function shell(command) {
+  if (!shellHandle) return null;
+  try {
+    const res = await shellHandle({ command: command });
+    return res && res.aggregated ? String(res.aggregated).trim() : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Recorded once per run. A missing commit is reported as unknown rather than guessed: a
+// wrong anchor is worse than an absent one, because it reads as verified.
+const baseCommit =
+  (await shell("git -C " + ROOT + " rev-parse --short HEAD")) || "unknown";
+
+let currentStage = "start";
+let currentMilestoneId = "";
+
+/**
+ * Run one child, timed and recorded.
+ *
+ * The recording is best-effort on purpose: telemetry that can fail a pipeline run is worse
+ * than no telemetry. A lost row costs a data point; a lost run costs the work.
+ */
+async function runRole(role, prompt, schema, label) {
+  const started = Date.now();
+  try {
+    const result = await agents.run(prompt, {
+      agentId: role,
+      thinking: thinkingFor(role),
+      label: label,
+      schema: schema,
+    });
+    await recordRun(role, started, "ok", null, { label: label });
+    return result;
+  } catch (err) {
+    await recordRun(role, started, "failed", String(err), { label: label });
+    throw err;
+  }
+}
+
+async function recordRun(role, started, status, error, extra) {
+  try {
+    await agent_run_write({
+      reference: reference,
+      agent: role,
+      model: cfg.models && cfg.models[role] ? cfg.models[role] : undefined,
+      thinking: thinkingFor(role),
+      stage: currentStage,
+      milestone: currentMilestoneId,
+      status: status,
+      duration_ms: Date.now() - started,
+      error: error === null ? undefined : error,
+      base_commit: baseCommit,
+      details: extra || {},
+    });
+  } catch (err) {
+    log("Telemetry row failed for " + role + ": " + String(err));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Schemas
 //
 // Same two rules as phase 1 (D9): every schema has a legal way to say "I cannot", and every
@@ -589,6 +670,9 @@ function cleanLocations(locations) {
  * Here it matters more — a test failure's location is the most useful thing in the row.
  */
 async function writeEntry(entry) {
+  // Every row carries the commit it was written against, stamped here so no caller can
+  // forget it. A line range without an anchor is precise today and misleading tomorrow.
+  entry = Object.assign({ base_commit: baseCommit }, entry);
   try {
     const res = await ledger_write(entry);
     return { id: res.id, citations_rejected: false };
@@ -605,6 +689,7 @@ async function writeEntry(entry) {
       agent: entry.agent,
       type: entry.type,
       reference: entry.reference,
+      base_commit: baseCommit,
       status: entry.status,
       severity: maxSeverity(entry.severity || "info", "warning"),
       needs_human: true,
@@ -664,17 +749,18 @@ async function attentionRows() {
  * stopping silently is the single unacceptable ending.
  */
 async function briefAndReturn(outcome) {
+  currentStage = "brief";
   phase("Brief");
   const rows = await attentionRows();
   const summary = Object.assign({ reference: reference, rows_written: written }, outcome);
   let brief;
   try {
-    brief = await agents.run(briefPrompt(rows, summary), {
-      agentId: "briefer",
-      thinking: thinkingFor("briefer"),
-      label: "brief2:" + reference,
-      schema: BriefSchema,
-    });
+    brief = await runRole(
+      "briefer",
+      briefPrompt(rows, summary),
+      BriefSchema,
+      "brief2:" + reference,
+    );
   } catch (err) {
     brief = {
       status: "blocked",
@@ -1129,6 +1215,8 @@ log(
 // Stage 1: build and plan the tests, in parallel
 // ---------------------------------------------------------------------------
 
+currentStage = "build";
+currentMilestoneId = milestone ? milestone.id : "whole-plan";
 phase(
   milestone
     ? "1 Build " + milestone.id + " and plan the tests"
@@ -1142,21 +1230,18 @@ let scenarioResult;
 
 try {
   const both = await Promise.all([
-    agents.run(
+    runRole(
+      "executor",
       executorPrompt(goal, criteria, milestoneSteps, direction, attempts, milestone),
-      {
-        agentId: "executor",
-        thinking: thinkingFor("executor"),
-        label: "build:" + reference,
-        schema: CodeChangeSchema,
-      },
+      CodeChangeSchema,
+      "build:" + reference,
     ),
-    agents.run(scenarioPrompt(goal, criteria), {
-      agentId: "test-planner",
-      thinking: thinkingFor("test-planner"),
-      label: "scenarios:" + reference,
-      schema: ScenariosSchema,
-    }),
+    runRole(
+      "test-planner",
+      scenarioPrompt(goal, criteria),
+      ScenariosSchema,
+      "scenarios:" + reference,
+    ),
   ]);
   executorResult = both[0];
   scenarioResult = both[1];
@@ -1330,21 +1415,13 @@ while (pass < MAX_TEST_PASSES) {
     );
   }
 
+  currentStage = "test";
   phase("2 Tests, pass " + pass);
-  testResult = await agents.run(
-    testPrompt(
-      currentScenarios,
-      attempts,
-      attempt.files_changed,
-      milestone,
-      deferredScenarios,
-    ),
-    {
-      agentId: "test-executor",
-      thinking: thinkingFor("test-executor"),
-      label: "test" + pass + ":" + reference,
-      schema: TestResultSchema,
-    },
+  testResult = await runRole(
+    "test-executor",
+    testPrompt(currentScenarios, attempts, attempt.files_changed, milestone, deferredScenarios),
+    TestResultSchema,
+    "test" + pass + ":" + reference,
   );
   await recordTestResult(testResult, pass);
 
@@ -1381,16 +1458,14 @@ while (pass < MAX_TEST_PASSES) {
 
   if (pass === MAX_TEST_PASSES) break;
 
+  currentStage = "rework";
   phase("2 Rework, pass " + pass);
   log(failures.length + " failing; reworking.");
-  attempt = await agents.run(
+  attempt = await runRole(
+    "executor",
     executorPrompt(goal, criteria, milestoneSteps, direction, attempts, milestone),
-    {
-      agentId: "executor",
-      thinking: thinkingFor("executor"),
-      label: "rework" + pass + ":" + reference,
-      schema: CodeChangeSchema,
-    },
+    CodeChangeSchema,
+    "rework" + pass + ":" + reference,
   );
   await recordAttempt(attempt, "Rework after pass " + pass);
 }
@@ -1434,23 +1509,21 @@ let changedFiles = attempt.files_changed;
 
 while (reviewPass < MAX_REVIEW_PASSES) {
   reviewPass += 1;
+  currentStage = "review";
   phase("3 Code review, pass " + reviewPass);
 
-  review = await agents.run(
+  review = await runRole(
+    "code-reviewer",
     reviewPrompt(
       goal,
       criteria,
       milestoneSteps,
       changedFiles,
-      allDeviations(),
+      await allDeviations(),
       await priorFindings(),
     ),
-    {
-      agentId: "code-reviewer",
-      thinking: thinkingFor("code-reviewer"),
-      label: "review" + reviewPass + ":" + reference,
-      schema: ReviewSchema,
-    },
+    ReviewSchema,
+    "review" + reviewPass + ":" + reference,
   );
 
   const recorded = await recordFindings("code-reviewer", review.items);
@@ -1467,15 +1540,13 @@ while (reviewPass < MAX_REVIEW_PASSES) {
   if (review.approved && recorded.worst !== "blocker") break;
   if (reviewPass === MAX_REVIEW_PASSES) break;
 
+  currentStage = "fix";
   phase("3 Fix, pass " + reviewPass);
-  const fix = await agents.run(
+  const fix = await runRole(
+    "executor",
     fixPrompt(goal, criteria, milestoneSteps, direction, review.items, attempts, milestone),
-    {
-      agentId: "executor",
-      thinking: thinkingFor("executor"),
-      label: "fix" + reviewPass + ":" + reference,
-      schema: CodeChangeSchema,
-    },
+    CodeChangeSchema,
+    "fix" + reviewPass + ":" + reference,
   );
   await recordAttempt(fix, "Fix after review pass " + reviewPass);
   changedFiles = fix.files_changed.length > 0 ? fix.files_changed : changedFiles;
@@ -1492,15 +1563,13 @@ while (reviewPass < MAX_REVIEW_PASSES) {
 
   // Re-run the suite after a fix. A review-driven edit is still an edit, and the objective
   // signal has to hold: this is the cheap leg paid twice so the expensive one is not.
+  currentStage = "retest";
   phase("3 Tests after fix " + reviewPass);
-  testResult = await agents.run(
+  testResult = await runRole(
+    "test-executor",
     testPrompt(currentScenarios, attempts, changedFiles, milestone, deferredScenarios),
-    {
-      agentId: "test-executor",
-      thinking: thinkingFor("test-executor"),
-      label: "retest" + reviewPass + ":" + reference,
-      schema: TestResultSchema,
-    },
+    TestResultSchema,
+    "retest" + reviewPass + ":" + reference,
   );
   await recordTestResult(testResult, pass + reviewPass);
 

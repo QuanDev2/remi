@@ -50,6 +50,73 @@ if (reference.length === 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Telemetry and commit anchoring
+//
+// Duplicated from remi-build.js rather than shared, because Code Mode rejects `import`
+// and a cell body has no module system. The alternative — one script reading and eval'ing
+// another — buys deduplication at the price of a harder failure mode.
+// ---------------------------------------------------------------------------
+
+/** The shell, resolved from the catalog: `exec` is not a plain guest global here. */
+const shellHandle = catalog.all().filter(function (t) {
+  return t.callableName === "exec";
+})[0];
+
+async function shell(command) {
+  if (!shellHandle) return null;
+  try {
+    const res = await shellHandle({ command: command });
+    return res && res.aggregated ? String(res.aggregated).trim() : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// A missing commit is reported as unknown rather than guessed: a wrong anchor reads as
+// verified, which is worse than an absent one.
+const baseCommit =
+  (await shell("git -C " + ROOT + " rev-parse --short HEAD")) || "unknown";
+
+let currentStage = "start";
+
+/** Run one child, timed and recorded. Telemetry failures never fail the run. */
+async function runRole(role, prompt, schema, label) {
+  const started = Date.now();
+  try {
+    const result = await agents.run(prompt, {
+      agentId: role,
+      thinking: thinkingFor(role),
+      label: label,
+      schema: schema,
+    });
+    await recordRun(role, started, "ok", null, { label: label });
+    return result;
+  } catch (err) {
+    await recordRun(role, started, "failed", String(err), { label: label });
+    throw err;
+  }
+}
+
+async function recordRun(role, started, status, error, extra) {
+  try {
+    await agent_run_write({
+      reference: reference,
+      agent: role,
+      model: cfg.models && cfg.models[role] ? cfg.models[role] : undefined,
+      thinking: thinkingFor(role),
+      stage: currentStage,
+      status: status,
+      duration_ms: Date.now() - started,
+      error: error === null ? undefined : error,
+      base_commit: baseCommit,
+      details: extra || {},
+    });
+  } catch (err) {
+    log("Telemetry row failed for " + role + ": " + String(err));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Schemas
 //
 // Every schema carries `status` with a legal `blocked` value and a `reason`, and
@@ -340,6 +407,9 @@ function maxSeverity(a, b) {
  * a role citing files that do not exist is itself something Quan should see.
  */
 async function writeEntry(entry) {
+  // Every row carries the commit it was written against, stamped here so no caller can
+  // forget it. A line range without an anchor is precise today and misleading tomorrow.
+  entry = Object.assign({ base_commit: baseCommit }, entry);
   try {
     const res = await ledger_write(entry);
     return { id: res.id, citations_rejected: false };
@@ -368,7 +438,7 @@ async function writeEntry(entry) {
         String(err),
       details: entry.details,
     };
-    const res = await ledger_write(retry);
+    const res = await ledger_write(Object.assign({ base_commit: baseCommit }, retry));
     log("Citations rejected for a " + entry.agent + " entry: " + paths);
     return { id: res.id, citations_rejected: true };
   }
@@ -399,12 +469,7 @@ async function briefAndReturn(outcome) {
   const rows = await attentionRows();
   let brief;
   try {
-    brief = await agents.run(briefPrompt(rows), {
-      agentId: "briefer",
-      thinking: thinkingFor("briefer"),
-      label: "brief:" + reference,
-      schema: BriefSchema,
-    });
+    brief = await runRole("briefer", briefPrompt(rows), BriefSchema, "brief:" + reference);
   } catch (err) {
     // The briefer is the last step before Quan, so its failure is reported rather
     // than swallowed: the rows themselves still reach him, unphrased.
@@ -477,12 +542,8 @@ if (goal.criteria.length === 0) {
 log(goal.criteria.length + " criteria read from entry " + goalRow.id + ".");
 phase("2 Plan");
 
-const plan = await agents.run(planPrompt(goal), {
-  agentId: "planner",
-  thinking: thinkingFor("planner"),
-  label: "plan:" + reference,
-  schema: PlanSchema,
-});
+currentStage = "plan";
+const plan = await runRole("planner", planPrompt(goal), PlanSchema, "plan:" + reference);
 
 // No locations on the plan row, deliberately. Plan steps name files they will create,
 // and citation validation rejects paths that do not exist yet — correctly, since it
@@ -538,12 +599,13 @@ log(
 );
 phase("3 Adversarial review");
 
-const review = await agents.run(reviewPrompt(goal, plan), {
-  agentId: "plan-reviewer",
-  thinking: thinkingFor("plan-reviewer"),
-  label: "review:" + reference,
-  schema: FindingsSchema,
-});
+currentStage = "plan-review";
+const review = await runRole(
+  "plan-reviewer",
+  reviewPrompt(goal, plan),
+  FindingsSchema,
+  "review:" + reference,
+);
 
 const findingIds = [];
 let citationsRejected = 0;

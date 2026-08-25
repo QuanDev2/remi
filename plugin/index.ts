@@ -84,6 +84,19 @@ const WriteParams = Type.Object(
     resolved_by: Type.Optional(
       Type.Integer({ description: "Id of the entry that closes this one out." }),
     ),
+    supersedes: Type.Optional(
+      Type.Integer({
+        description:
+          "Id of the entry this one replaces. Use it when a decision reverses an earlier " +
+          "one: the ledger only appends, so the newer entry carries the pointer.",
+      }),
+    ),
+    base_commit: Type.Optional(
+      Type.String({
+        description:
+          "Commit the claim was made against. Line ranges are only meaningful with it.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -112,6 +125,28 @@ const QueryParams = Type.Object(
   { additionalProperties: false },
 );
 type QueryParams = Static<typeof QueryParams>;
+
+const RunParams = Type.Object(
+  {
+    reference: Type.String({ description: "Feature id this execution belongs to." }),
+    agent: Type.String({ description: "Role id that ran, e.g. 'executor'." }),
+    model: Type.Optional(Type.String({ description: "Model the role resolved to." })),
+    thinking: Type.Optional(
+      Type.String({ description: "Thinking level passed for this call." }),
+    ),
+    stage: Type.Optional(
+      Type.String({ description: "Pipeline stage: 'plan', 'build', 'test', 'review'." }),
+    ),
+    milestone: Type.Optional(Type.String({ description: "Milestone id, when there is one." })),
+    status: Type.Union([Type.Literal("ok"), Type.Literal("failed")]),
+    duration_ms: Type.Integer({ description: "Wall clock for the call, in milliseconds." }),
+    error: Type.Optional(Type.String({ description: "Failure text, when it failed." })),
+    base_commit: Type.Optional(Type.String({ description: "Commit the run started from." })),
+    details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  },
+  { additionalProperties: false },
+);
+type RunParams = Static<typeof RunParams>;
 
 export default definePluginEntry({
   id: "remi",
@@ -200,7 +235,8 @@ export default definePluginEntry({
           await client.query("BEGIN");
           const entry = await client.query<{ id: string }>(
             `INSERT INTO ledger
-               (agent, type, status, severity, needs_human, reference, content, details, resolved_by)
+               (agent, type, status, severity, needs_human, reference, content, details,
+                resolved_by, supersedes, base_commit)
              VALUES ($1,
                      $2::ledger_type,
                      COALESCE($3::ledger_status, 'open'),
@@ -208,7 +244,9 @@ export default definePluginEntry({
                      COALESCE($5::boolean, false),
                      $6, $7,
                      COALESCE($8::jsonb, '{}'::jsonb),
-                     $9::bigint)
+                     $9::bigint,
+                     $10::bigint,
+                     $11)
              RETURNING id`,
             [
               params.agent,
@@ -220,6 +258,8 @@ export default definePluginEntry({
               params.content,
               params.details ? JSON.stringify(params.details) : null,
               params.resolved_by ?? null,
+              params.supersedes ?? null,
+              params.base_commit ?? null,
             ],
           );
           const id = Number(entry.rows[0].id);
@@ -314,6 +354,49 @@ export default definePluginEntry({
             { type: "text", text: `${res.rowCount ?? 0} ledger entr(ies)\n${JSON.stringify(res.rows, null, 2)}` },
           ],
           details,
+        };
+      },
+    });
+
+    // Execution telemetry, kept separate from the ledger on purpose. The ledger records
+    // what an agent produced and is read by the briefer and by fresh sessions; this
+    // records what an execution cost and is read by nobody but us, when a question about
+    // model choice or wall clock needs an answer that is not a guess.
+    api.registerTool({
+      name: "agent_run_write",
+      label: "Agent run write",
+      description:
+        "Record one agent execution: role, model, thinking level, duration, and whether it " +
+        "succeeded. Called by the pipeline scripts around every agents.run, so per-role cost " +
+        "and failure rates are queryable instead of estimated.",
+      parameters: RunParams,
+      outputSchema: Type.Object({ id: Type.Integer() }, { additionalProperties: false }),
+      async execute(_id: string, params: RunParams) {
+        const res = await getPool().query<{ id: string }>(
+          `INSERT INTO agent_run
+             (reference, agent, model, thinking, stage, milestone, status, duration_ms,
+              error, base_commit, details)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::agent_run_status, $8,
+                   $9, $10, COALESCE($11::jsonb, '{}'::jsonb))
+           RETURNING id`,
+          [
+            params.reference,
+            params.agent,
+            params.model ?? null,
+            params.thinking ?? null,
+            params.stage ?? null,
+            params.milestone ?? null,
+            params.status,
+            params.duration_ms,
+            params.error ?? null,
+            params.base_commit ?? null,
+            params.details ? JSON.stringify(params.details) : null,
+          ],
+        );
+        const id = Number(res.rows[0].id);
+        return {
+          content: [{ type: "text", text: `agent_run ${id} recorded` }],
+          details: { id },
         };
       },
     });

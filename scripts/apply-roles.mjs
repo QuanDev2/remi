@@ -78,7 +78,7 @@ config.agents.defaults.sandbox = {
 // session — but only if the sandbox tool policy admits them as well.
 config.tools.sandbox = {
   ...(config.tools.sandbox ?? {}),
-  tools: { alsoAllow: ["ledger_write", "ledger_query"] },
+  tools: { alsoAllow: ["ledger_write", "ledger_query", "agent_run_write"] },
 };
 
 // Swarm supplies agents.run / phase / log, which the pipeline scripts are built on.
@@ -198,6 +198,12 @@ const roleTable = {
     [spec.orchestrator.id, spec.orchestrator.thinking],
     ...spec.roles.map((r) => [r.id, r.thinking]),
   ]),
+  // Models are projected too, so telemetry rows record which model actually ran rather
+  // than leaving it to be inferred from the date of the run.
+  models: Object.fromEntries([
+    [spec.orchestrator.id, spec.orchestrator.model],
+    ...spec.roles.map((r) => [r.id, r.model]),
+  ]),
 };
 if (!dryRun) {
   writeFileSync(
@@ -215,7 +221,12 @@ entries[spec.orchestrator.id].subagents = {
 
 // Plugin tools are filtered out by the `coding` profile unless re-added here.
 config.tools ??= {};
-const alsoAllow = new Set([...(config.tools.alsoAllow ?? []), "ledger_write", "ledger_query"]);
+const alsoAllow = new Set([
+  ...(config.tools.alsoAllow ?? []),
+  "ledger_write",
+  "ledger_query",
+  "agent_run_write",
+]);
 config.tools.alsoAllow = [...alsoAllow].sort();
 
 if (dryRun) {
