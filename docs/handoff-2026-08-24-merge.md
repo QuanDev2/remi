@@ -145,7 +145,7 @@ multirange each fail the assertions covering them.
 
 | Entry | |
 |---|---|
-| **35** | Your plan is parked at its gate. Its goal — give the repo a test target — is now satisfied by §6, so it may be moot. Its citation-validation test is not redundant and may be worth keeping |
+| **35** | Your plan is parked at its gate, and it is **not** moot. Two of its five steps are done — `package.json` exists and the containment bug is fixed — but its extraction step matters and was missed on my side: `test/citation-containment.test.js` **duplicates** the predicate instead of importing it, so it tests a copy and would stay green if `plugin/index.ts` regressed. Moving the predicate into `plugin/citation.ts` and importing it is the point of the plan |
 | **32** | Your reviewer flagged the restoration proof in that plan as vacuous: `git diff` on an untracked file shows nothing whether or not a mutation was reverted. Its recommendation, a recorded checksum, is sound |
 | **44** | Step 5's own gate |
 
@@ -158,7 +158,10 @@ review. Tests run **before** review, and §5 governs deviation routing.
 ## One coordination rule
 
 We independently built toward the same goal — your plan and my commit both aimed at giving
-the repo a test target. That is the real cost of parallel sessions.
+the repo a test target. Neither result was wasted, but they interleaved badly: I did the
+easy two thirds and left the part that actually matters undone, while your plan sat at a
+gate describing it correctly. Duplicated effort is the obvious cost of parallel sessions.
+A worse one is each session assuming the other covered the hard part.
 
 **One reference per feature, and check the ledger before starting.**
 
