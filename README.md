@@ -218,6 +218,7 @@ The executor is Sonnet because it sits behind two verifiers — an objective tes
 - [Resuming in a new session](docs/RESUME.md) — paste-ready starter prompt, and what state lives where.
 - [Setup](docs/SETUP.md) — bare machine to working pipeline in six steps, plus a troubleshooting table.
 - [Milestone 1 plan](docs/milestone-1-plan.md) — the pipeline design, ledger DDL, role configs, and six implementation steps, with what OpenClaw does and does not provide verified against source.
+- [Merge handoff, 24 Aug](docs/handoff-2026-08-24-merge.md) — what changed when two parallel sessions merged, and what is open.
 - [Original handoff note](docs/handoff-2026-08-23.md) — the source document this project was scoped from, with a table of decisions since superseded.
 
 ## Status
