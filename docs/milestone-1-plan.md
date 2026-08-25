@@ -438,6 +438,59 @@ criteria this milestone claims, lists the rest as deferred so they are recognise
 reported as failures, and refuses to run a milestone whose criteria no scenario covers, because a
 green result there would mean nothing.
 
+### D17 — Executions are recorded separately from what they produced
+
+Adopted from a system design Quan brought in, which was building a different animal — a workflow
+service with an API, a Redis queue and a durable orchestrator — but had three ideas worth taking.
+
+**`agent_run`, because the plan made promises it could not keep.** Two commitments in this document
+require data: "if mean passes exceeds roughly 1.5, revisit the model choice on data rather than
+instinct", and "re-measure whether `xhigh` is honoured with a real repo mounted". Neither was
+answerable. The ledger records what an agent *produced* and nothing about the execution — no
+duration, no model, no failure. Phase 1's first run was timed with a stopwatch on the CLI, which is
+not a measurement anyone can repeat.
+
+So every child now goes through `runRole()`, which times it and writes a row carrying role, model,
+thinking level, stage, milestone, duration and error. `agent_run_stats` answers what a role costs.
+Telemetry is best-effort by design: a row that can fail the run is worse than no row, since a lost
+row costs a data point and a lost run costs the work.
+
+**`base_commit`, because the citation guard was validating against a moving target.** D10's guard
+proves a cited path exists and a line range is well formed. It never anchored either to a commit, so
+`plugin/index.ts {[171,177)}` was exact the day it was written and misleading after the next edit.
+`writeEntry` now stamps the commit on every row centrally, where no caller can omit it. A commit
+that cannot be read is recorded as `unknown` rather than guessed: a wrong anchor reads as verified,
+which is worse than an absent one.
+
+**`supersedes`, because reversals were prose.** Entry 42 recorded the gap — the ledger only appends,
+so `resolved_by` on the row being closed can never be set. D14 reversed a handoff committed the same
+day, and that reversal existed only in two documents. A decision now points at the decision it
+replaces, and `current_decision` is what the project currently believes. Both rows stay: the history
+is the point.
+
+**What was deliberately refused**, and why, since the document argues for all of it:
+
+| Refused | Reason |
+|---|---|
+| Redis as transport | D3. `agents.run` awaits child completion inside the script, and OpenClaw's docs forbid polling. Their Redis dispatches to workers; there are no workers here |
+| Orchestrator as a service, with an API and a UI | D1 inverted. Orchestration state in JS variables costs zero tokens; a service buys concurrency and restartability we have no use for yet |
+| `work_item` queue table | A queue for concurrent workflows. One feature at a time needs a loop |
+| `agent_definition` / `workflow_definition` as tables | Config in a database. `roles.json` is diffable, reviewable and reproducible on a fresh machine; that is worth more than runtime editability |
+| `status VARCHAR(50)` | Our enums rejected an agent's invented severity `urgent` at the database. Varchar makes every typo valid data |
+| Stage results as agent-written Markdown in `docs/` | Prose is unvalidated, so the next agent parses English instead of reading a typed field. It also fills the repository with process documents |
+
+**Where that design is genuinely better than ours: crash recovery.** Their workflow state is durable,
+so a restart resumes. Ours lives in a closure that dies with the run, and a gateway restart mid-phase
+2 loses the run with a half-modified tree. Milestones (D16) shrink the blast radius, and the
+sign-off rows already act as their `workflow.current_stage` — as an append-only projection rather
+than a mutable pointer, which is the better half of the idea. Within-milestone recovery is still
+unhandled, and re-running a milestone against a dirty tree is untested.
+
+**An `artifact` table was deferred rather than refused.** Stage results belong in `details` as
+validated JSON, which is what makes `severity` and line ranges queryable. But a milestone's diff,
+raw test output, and eventually a screenshot proving a UI milestone have no home. Metadata in
+Postgres, bytes in Git or on disk — worth building when the first UI demo needs it.
+
 ---
 
 ## The pipeline
