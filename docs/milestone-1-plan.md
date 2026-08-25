@@ -17,22 +17,27 @@ Read this first. Setup instructions are in [SETUP.md](SETUP.md).
 | 4 — Nine role configs | **done.** All nine verified in character across two providers |
 | — Sandbox (D11) | **done.** Containers, one project bind, no network egress |
 | 5 — Phase-1 script and the gate | **done.** `remi-plan.js` ran end to end; `remi-gate.js` records the decision |
-| **6 — Phase-2 script** | **next**, behind two blockers |
+| 6 — Phase-2 script | **written**, gate-refusal verified; first full run pending Quan's gate decision |
+| — Interview (front door) | **written**, never run end to end |
 
 ### Next action
 
-Remaining tasks, in order. Items 1 and 2 are independent of each other.
+Everything is built. What remains is running it.
 
 | # | Task | Blocking |
 |---|---|---|
-| 1 | Node-capable sandbox image for `executor` and `test-executor` | **blocks step 6** |
-| 2 | Root `package.json` and a test runner, so the test lane has a target | **blocks step 6** |
-| 3 | Write `remi-build.js` — step 6 | needs 1 and 2 |
-| 4 | One end-to-end run on a real change, Quan as the gate | the acceptance criterion |
+| 1 | Quan's decision at gate row 35 on `the-repository-has-20260824-i2m` | **blocks the first full run** |
+| 2 | One end-to-end run: interview → plan → gate → build → test → review | the acceptance criterion |
+| 3 | Walk the interview once, as the front door of a demo | never exercised |
 
-Item 2 is already planned: phase 1 was run against it as step 5's own smoke test, and its plan is
-sitting at gate row 35 on reference `the-repository-has-20260824-i2m` awaiting a decision. Approving
-it there is what makes the pipeline build its own test target, which is the point of self-hosting.
+Both step-6 blockers cleared during the merge: `docker/sandbox-node.Dockerfile` gives `executor` and
+`test-executor` Node 24, and the root `package.json` runs `node --test`. Verified independently by
+running the image with the real bind and `network: none` — 15 tests, green, offline.
+
+The parked plan is the natural first job. Two of its five steps landed by hand during the merge, so
+what remains is its one substantive step: making the containment test import the shipped predicate
+instead of a copy of it. Small, real, and the correct answer is already known — which is what makes
+it a good first exercise of a pipeline nobody has watched work yet.
 
 **Handover sequencing, decided.** Step 5 gets written conventionally rather than by Remi. Having
 Remi invent the pipeline that is meant to constrain it inverts the point, and there would be no
@@ -752,19 +757,50 @@ Mode, no shell at all. It cannot inspect the project. That is not a gap to close
 the orchestrator a router. When it needs a project fact, it asks a role that holds a bind, and the
 answer arrives as data it can pass on.
 
-### Step 6 — Phase 2 script
+### Step 6 — Phase 2 script — **WRITTEN 2026-08-24, first run pending the gate**
 
 `scripts/remi-build.js`: read approved plan → `Promise.all([executor, test planner])` → bounded test/rework loop → code review → bounded fix loop → final brief.
 
 *Criterion:* the full acceptance criterion at the top of this document, including A4 (test planner prompt provably free of plan and code text) and A5 (a deliberately failing test drives a rework pass, loop terminates).
 
-Blocked on two things, both listed in the next-action table: an image with `node` for the two `rw`
-roles, and a test target for the suite to run. The second is itself sitting at the gate.
+Both blockers are gone: `executor` and `test-executor` run the Node image, and `npm test` was
+verified green inside that image with the real bind and no network. What is left is a decision at
+gate row 35, since the script refuses to run without one.
 
-What phase 1 settles for it, so it does not get re-litigated: the deployment and bootstrap shape
-(D12), stage-row ownership (D13), the `exec` route to project files, the citation fallback, and the
-gate contract — an approval row whose own `status` is `approved`, carrying `details.direction`,
-which is what phase 2 hands the executor alongside the plan.
+**Verified so far: the fail-closed boundary.** `remi-build.js` was called twice — once on a
+reference that does not exist, once on the parked plan whose gate row is `open` rather than
+`approved`. Both refused, with the same actionable reason. The undecided case is the one that
+matters: a plan that reached the gate but was never answered cannot slip into execution.
+
+**Bounds, and why they are not configuration.** Three test passes, three review passes, two
+amendments. An agent that cannot go green in three passes is reporting something, and raising the
+cap converts that signal into a longer wait.
+
+**What the loops do with a deviation** follows the executor's own classification. `implementation`
+is recorded and nobody is interrupted. `plan` sends the affected steps back to the planner and the
+delta — only the delta — to the plan reviewer, then continues. `criteria` stops the run, because the
+executor is saying the contract is wrong and further passes would be work against a broken contract.
+
+**A4 is checkable by reading one function.** `scenarioPrompt` receives the goal and the criteria.
+It is the only prompt in the script that takes no plan, no step list, no file list, and no diff —
+and it also withholds Quan's gate direction, since a direction is written about a plan and would
+carry implementation shape with it.
+
+**The cost of that isolation, recorded rather than hidden.** Criteria freeze before the plan exists,
+so a gate direction that changes what *done* means would leave scenarios testing the old contract.
+The run writes a `decision` row saying the direction reached the executor and the planner only, and
+the honest fix for a changed criterion is a fresh interview rather than a quiet edit here.
+
+**Sign-off is a `decision` row, not an `approval` row.** `approval` means the human gate, and the
+gate check queries exactly that; a reviewer sign-off wearing the same type would let a second run
+mistake the code reviewer for Quan.
+
+**Nothing is committed.** Phase 2 leaves the working tree dirty on purpose. A pipeline that commits
+its own work removes the last cheap place to disagree with it.
+
+What phase 1 settled, so it did not get re-litigated: the deployment and bootstrap shape (D12),
+stage-row ownership (D13), the route to project files, the citation fallback, and the gate contract —
+an approval row whose own `status` is `approved`, carrying `details.direction`.
 
 ---
 

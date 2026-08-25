@@ -177,7 +177,12 @@ for (const role of spec.roles) {
 // agent-entry keys (three roles share one model at three levels). roles.json stays the
 // single source of truth; this is a derived projection of it.
 const orchestratorWorkspace = entries[spec.orchestrator.id].workspace;
-const pipelineScripts = ["remi-interview.js", "remi-plan.js", "remi-gate.js"];
+const pipelineScripts = [
+  "remi-interview.js",
+  "remi-plan.js",
+  "remi-gate.js",
+  "remi-build.js",
+];
 const deployed = [];
 
 for (const name of pipelineScripts) {
